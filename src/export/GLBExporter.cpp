@@ -35,19 +35,20 @@ void GLBExporter::add_mesh_to_model(tinygltf::Model& model,
     gltf_mesh.name = "KinectMesh";
 
     // Create accessors for positions, normals, colors, indices
-    int pos_buf = create_position_buffer(model, mesh);
-    int nrm_buf = create_normal_buffer(model, mesh);
-    int col_buf = create_color_buffer(model, mesh);
-    int idx_buf = create_indices_buffer(model, mesh);
+    // Each function adds its accessor and returns the accessor index
+    int pos_accessor_idx = create_position_buffer(model, mesh);
+    int nrm_accessor_idx = create_normal_buffer(model, mesh);
+    int col_accessor_idx = create_color_buffer(model, mesh);
+    int idx_accessor_idx = create_indices_buffer(model, mesh);
 
-    // Create primitive
+    // Create primitive with correct accessor indices
     tinygltf::Primitive primitive;
-    primitive.attributes["POSITION"] = model.accessors.size() - 3;
-    primitive.attributes["NORMAL"] = model.accessors.size() - 2;
-    if (col_buf >= 0) {
-        primitive.attributes["COLOR_0"] = model.accessors.size() - 1;
+    primitive.attributes["POSITION"] = pos_accessor_idx;
+    primitive.attributes["NORMAL"] = nrm_accessor_idx;
+    if (col_accessor_idx >= 0) {
+        primitive.attributes["COLOR_0"] = col_accessor_idx;
     }
-    primitive.indices = model.accessors.size() - 0;
+    primitive.indices = idx_accessor_idx;
     primitive.mode = TINYGLTF_MODE_TRIANGLES;
 
     // Create material

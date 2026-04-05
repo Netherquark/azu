@@ -46,8 +46,8 @@ AlignmentResult PointToPlaneICP::align(
 
         // Solve linear system
         Vector3f delta_rot, delta_trans;
-        if (!solve_linear_system(correspondences, source_vertices, delta_rot,
-                                delta_trans)) {
+        if (!solve_linear_system(correspondences, source_vertices, model_vertices,
+                                result.pose, delta_rot, delta_trans)) {
             result.success = false;
             return result;
         }
@@ -138,7 +138,10 @@ PointToPlaneICP::find_correspondences(
 
 bool PointToPlaneICP::solve_linear_system(
     const std::vector<Correspondence>& correspondences,
-    const std::vector<Vector3f>& source_verts, Vector3f& delta_rotation,
+    const std::vector<Vector3f>& source_verts,
+    const std::vector<Vector3f>& model_verts,
+    const CameraPose& current_pose,
+    Vector3f& delta_rotation,
     Vector3f& delta_translation) {
 
     // Point-to-plane ICP: min ||n_i^T (R*p_i - q_i)||^2
@@ -153,15 +156,21 @@ bool PointToPlaneICP::solve_linear_system(
     for (int i = 0; i < n; ++i) {
         const Correspondence& c = correspondences[i];
         const Vector3f& p = source_verts[c.source_idx];
+        const Vector3f& q = model_verts[c.model_idx];
         const Vector3f& n = c.normal.normalized();
 
-        // Skew symmetric matrix for cross product
-        Vector3f p_cross_n = p.cross(n);
+        // Transform source point to world using current pose
+        Vector3f p_world = current_pose.transform_point(p);
+
+        // Skew symmetric matrix for cross product (of world point, not camera-frame)
+        Vector3f p_cross_n = p_world.cross(n);
 
         A.row(i) << p_cross_n.x(), p_cross_n.y(), p_cross_n.z(), n.x(), n.y(),
             n.z();
 
-        b(i) = 0.0f;  // Point-to-plane residual is always 0 at optimum
+        // Point-to-plane residual: n_i^T * (q_i - p_world)
+        // Negative because we solve for delta that minimizes this
+        b(i) = -n.dot(q - p_world);
     }
 
     // Solve using SVD
@@ -178,18 +187,22 @@ bool PointToPlaneICP::solve_linear_system(
 CameraPose PointToPlaneICP::update_pose(const CameraPose& current_pose,
                                        const Vector3f& delta_rotation,
                                        const Vector3f& delta_translation) {
-    // Small angle approximation: R_delta ≈ I + [delta_rot]_x
+    // Small angle approximation: exp([w]_x) ≈ I + [w]_x
+    // Compute incremental rotation from angle-axis delta
     float angle = delta_rotation.norm();
+    Matrix3f R_delta = Matrix3f::Identity();
     if (angle > 1e-6f) {
-        Vector3f axis = delta_rotation / angle;
-        Matrix3f R_delta = current_pose.R;
-        R_delta += math::skew_symmetric(delta_rotation);  // First-order approx
-        R_delta = R_delta.householderQr().householderQ();  // Re-orthogonalize
-        return CameraPose(R_delta, current_pose.t + delta_translation);
+        Vector3f axis = delta_rotation.normalized();
+        // First-order approximation: exp([w]_x) ≈ I + [w]_x
+        R_delta += math::skew_symmetric(delta_rotation);
+        // Re-orthogonalize to ensure valid rotation
+        R_delta = R_delta.householderQr().householderQ();
     }
-
-    return CameraPose(current_pose.R,
-                     current_pose.t + delta_translation);
+    // Apply incremental rotation to current rotation: new_R = R_delta * current_R
+    CameraPose result;
+    result.R = R_delta * current_pose.R;
+    result.t = current_pose.t + delta_translation;
+    return result;
 }
 
 float PointToPlaneICP::compute_error(

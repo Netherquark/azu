@@ -44,7 +44,8 @@ Vector3f MarchingCubes::interpolate_vertex(const Vector3f& p1, const Vector3f& p
                                           float f1, float f2) const {
     if (std::abs(f1 - f2) < 1e-6f) return p1;
     float t = f1 / (f1 - f2);
-    return Vector3f::Lerp(p1, p2, t);
+    // Linear interpolation: p = (1 - t) * p1 + t * p2
+    return (1.0f - t) * p1 + t * p2;
 }
 
 Vector3f MarchingCubes::compute_vertex_normal(const Vector3f& pos) const {
@@ -152,7 +153,6 @@ void MarchingCubes::process_cube(int x, int y, int z, Mesh& mesh) {
     //  8: 0-4,  9: 1-5,  10: 2-6, 11: 3-7
 
     Vector3f edge_verts[12];
-    int edge_count = 0;
 
     if (EDGE_TABLE[cube_index] == 0) return;
 
@@ -160,7 +160,6 @@ void MarchingCubes::process_cube(int x, int y, int z, Mesh& mesh) {
     if (EDGE_TABLE[cube_index] & 1) {
         edge_verts[0] = interpolate_vertex(corners[0], corners[1], values[0],
                                           values[1]);
-        edge_count++;
     }
     if (EDGE_TABLE[cube_index] & 2) {
         edge_verts[1] = interpolate_vertex(corners[1], corners[3], values[1],
@@ -234,9 +233,3 @@ void MarchingCubes::process_cube(int x, int y, int z, Mesh& mesh) {
 }
 
 }  // namespace kf
-
-// Stub for TRI_TABLE - full table would be very large
-// This is a simplified version
-namespace kf {
-constexpr int MarchingCubes::TRI_TABLE[256][16];
-}

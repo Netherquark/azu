@@ -125,6 +125,7 @@ AlignmentResult ICPTracker::track_single_level(
         return result;
     }
 
+    // Use finest-level solver (index 0 is finest resolution)
     AlignmentResult result =
         icp_solvers_[0]->align(frame_verts, frame_norms, model_vertices,
                               model_normals, initial_pose, config_.camera);

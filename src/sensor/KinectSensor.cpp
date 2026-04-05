@@ -224,11 +224,11 @@ void KinectSensor::process_depth_frame(uint8_t* data, uint32_t timestamp) {
 
     depth_frame_next_->timestamp_us = timestamp;
 
-    // Queue for retrieval
-    depth_queue_.push(depth_frame_next_);
-
-    // Swap buffers
+    // Swap buffers BEFORE push to avoid race: next buffer becomes current before push
     std::swap(depth_frame_current_, depth_frame_next_);
+
+    // Queue the now-current frame for retrieval (safe: we no longer write to it)
+    depth_queue_.push(depth_frame_current_);
 
     frame_counter_++;
     update_fps();
@@ -243,11 +243,11 @@ void KinectSensor::process_color_frame(uint8_t* data, uint32_t timestamp) {
 
     color_frame_next_->timestamp_us = timestamp;
 
-    // Queue for retrieval
-    color_queue_.push(color_frame_next_);
-
-    // Swap buffers
+    // Swap buffers BEFORE push to avoid race: next buffer becomes current before push
     std::swap(color_frame_current_, color_frame_next_);
+
+    // Queue the now-current frame for retrieval (safe: we no longer write to it)
+    color_queue_.push(color_frame_current_);
 }
 
 void KinectSensor::update_fps() {

@@ -57,6 +57,8 @@ private:
     // Build and solve linear system
     bool solve_linear_system(const std::vector<Correspondence>& correspondences,
                             const std::vector<Vector3f>& source_verts,
+                            const std::vector<Vector3f>& model_verts,
+                            const CameraPose& current_pose,
                             Vector3f& delta_rotation,  // Output
                             Vector3f& delta_translation);
 

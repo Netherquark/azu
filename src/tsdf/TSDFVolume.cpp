@@ -24,7 +24,6 @@ TSDFVolume::~TSDFVolume() = default;
 
 Vector3i TSDFVolume::world_to_voxel(const Vector3f& world_pos) const {
     Vector3i idx;
-    float half_extent = volume_center_.x() + volume_extent_;
 
     idx.x() =
         static_cast<int>((world_pos.x() - (volume_center_.x() - volume_extent_)) /
@@ -259,9 +258,10 @@ void TSDFVolume::raycast(std::vector<Vector3f>& vertices,
                 if (last_tsdf > 0 && tsdf_val < 0) {
                     // Found surface, interpolate position
                     float alpha = last_tsdf / (last_tsdf - tsdf_val);
-                    Vector3f surface_pos = Vector3f::Lerp(
-                        ray_pos + ray_dir * (t - step_size),
-                        ray_pos + ray_dir * t, alpha);
+                    Vector3f p1 = ray_pos + ray_dir * (t - step_size);
+                    Vector3f p2 = ray_pos + ray_dir * t;
+                    // Linear interpolation: p = (1 - alpha) * p1 + alpha * p2
+                    Vector3f surface_pos = (1.0f - alpha) * p1 + alpha * p2;
 
                     // Compute normal via finite differences
                     float eps = config_.voxel_size / 2.0f;

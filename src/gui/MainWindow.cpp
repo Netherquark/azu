@@ -305,13 +305,52 @@ void MainWindow::capture_frame() {
 }
 
 void MainWindow::process_tracking() {
-    // ICP tracking against model (simplified for now)
-    // In production, would raycast and track
+    // Raycast current model to get vertices and normals
+    std::vector<Vector3f> model_vertices;
+    std::vector<Vector3f> model_normals;
+    std::vector<uint8_t> model_colors;
+    
+    if (tsdf_) {
+        tsdf_->raycast(model_vertices, model_normals, model_colors);
+    }
+    
+    if (model_vertices.empty()) {
+        KF_LOG_WARN("process_tracking: No model vertices available");
+        return;
+    }
+    
+    // Get latest depth frame and convert to vertex map
+    auto depth_frame = sensor_->get_latest_depth();
+    if (!depth_frame) {
+        return;
+    }
+    
+    // Generate vertex map from depth
+    auto frame_vmap = tracker_->depth_to_vertex_map(*depth_frame);
+    
+    // Run ICP tracking
+    auto frame_vertices = tracker_->extract_valid_vertices(frame_vmap);
+    auto frame_normals = tracker_->extract_valid_normals(frame_vmap);
+    
+    if (frame_vertices.size() < 100) {
+        return;  // Not enough points to track
+    }
+    
+    AlignmentResult result = tracker_->track_single_level(
+        frame_vmap, model_vertices, model_normals, current_pose_);
+    
+    if (result.success) {
+        current_pose_ = result.pose;
+        stats_.tracking_ok = true;
+        stats_.tracking_error = result.error;
+    } else {
+        stats_.tracking_ok = false;
+    }
 }
 
 void MainWindow::process_integration() {
-    DepthFramePtr depth_frame;
-    ColorFramePtr color_frame;
+    DepthFramePtr depth_frame = sensor_->get_latest_depth();
+    ColorFramePtr color_frame = sensor_->get_latest_color();
 
     if (sensor_->get_depth_frame(depth_frame)) {
         CameraPose pose = tracker_->get_pose();
