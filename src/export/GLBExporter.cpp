@@ -1,0 +1,248 @@
+#include "export/GLBExporter.h"
+
+// tinygltf requires nlohmann/json. Both headers live in third_party/tinygltf/
+// and that directory is on the include path via CMakeLists.txt (TINYGLTF_DIR).
+#include "json.hpp"
+#define TINYGLTF_NO_INCLUDE_JSON
+#include <tiny_gltf.h>
+
+#include <iostream>
+#include <cstring>
+#include <vector>
+#include <limits>
+
+namespace kfusion {
+namespace export_io {
+
+// Kinect → Unity coordinate conversion:
+//   Kinect: right-handed, X right, Y down, Z forward
+//   Unity:  left-handed,  X right, Y up,   Z forward
+// Conversion: flip Y (negate Y component), then negate Z (for left-handed flip)
+// Net result: (x, y, z) → (x, -y, -z) in Unity terms
+// BUT tinygltf/GLTF is right-handed Y-up. Unity imports GLTF with Y-up.
+// So convert Kinect camera space to GLTF Y-up:
+//   kinect (x, y, z) → gltf (x, -y, z)   [flip Y only, keep RH, Z-forward]
+// Unity then applies its own LH conversion on GLTF import (Z is flipped automatically)
+// Reference: Unity GLTF importer flips Z on import to go from RH to LH.
+// So: kinect_y-down → gltf_y-up: multiply Y by -1
+
+static Eigen::Vector3f toGLTF(const Eigen::Vector3f& v) {
+    return Eigen::Vector3f(v.x(), -v.y(), v.z());
+}
+
+bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepath) {
+    if (mesh.empty()) {
+        std::cerr << "[GLB] Mesh is empty, nothing to export.\n";
+        return false;
+    }
+
+    const size_t nvert = mesh.positions.size();
+    const size_t nidx  = mesh.indices.size();
+    const bool has_normals = (mesh.normals.size() == nvert);
+    const bool has_colors  = (mesh.colors.size() == nvert * 3);
+
+    // ---------------------------------------------------------
+    // Build binary buffer
+    // ---------------------------------------------------------
+
+    // Layout: [positions | normals | colors | indices]
+    std::vector<uint8_t> buffer_data;
+
+    auto appendBytes = [&](const void* data, size_t bytes) {
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(data);
+        buffer_data.insert(buffer_data.end(), p, p + bytes);
+        // Pad to 4-byte alignment
+        while (buffer_data.size() % 4 != 0) buffer_data.push_back(0);
+    };
+
+    // --- positions ---
+    size_t pos_offset = buffer_data.size();
+    {
+        std::vector<float> pos_data;
+        pos_data.reserve(nvert * 3);
+        Eigen::Vector3f pos_min( 1e9f,  1e9f,  1e9f);
+        Eigen::Vector3f pos_max(-1e9f, -1e9f, -1e9f);
+        for (size_t i = 0; i < nvert; ++i) {
+            Eigen::Vector3f p = toGLTF(mesh.positions[i]);
+            pos_data.push_back(p.x());
+            pos_data.push_back(p.y());
+            pos_data.push_back(p.z());
+            pos_min = pos_min.cwiseMin(p);
+            pos_max = pos_max.cwiseMax(p);
+        }
+        appendBytes(pos_data.data(), pos_data.size() * sizeof(float));
+    }
+    size_t pos_length = buffer_data.size() - pos_offset;
+
+    // --- normals ---
+    size_t norm_offset = 0;
+    size_t norm_length = 0;
+    if (has_normals) {
+        norm_offset = buffer_data.size();
+        std::vector<float> norm_data;
+        norm_data.reserve(nvert * 3);
+        for (size_t i = 0; i < nvert; ++i) {
+            Eigen::Vector3f n = toGLTF(mesh.normals[i]);
+            norm_data.push_back(n.x());
+            norm_data.push_back(n.y());
+            norm_data.push_back(n.z());
+        }
+        appendBytes(norm_data.data(), norm_data.size() * sizeof(float));
+        norm_length = buffer_data.size() - norm_offset;
+    }
+
+    // --- vertex colors (as vec4 FLOAT for GLTF compatibility) ---
+    size_t col_offset = 0;
+    size_t col_length = 0;
+    if (has_colors) {
+        col_offset = buffer_data.size();
+        std::vector<float> col_data;
+        col_data.reserve(nvert * 4);
+        for (size_t i = 0; i < nvert; ++i) {
+            col_data.push_back(mesh.colors[i*3+0] / 255.0f);
+            col_data.push_back(mesh.colors[i*3+1] / 255.0f);
+            col_data.push_back(mesh.colors[i*3+2] / 255.0f);
+            col_data.push_back(1.0f);
+        }
+        appendBytes(col_data.data(), col_data.size() * sizeof(float));
+        col_length = buffer_data.size() - col_offset;
+    }
+
+    // --- indices ---
+    size_t idx_offset = buffer_data.size();
+    appendBytes(mesh.indices.data(), nidx * sizeof(uint32_t));
+    size_t idx_length = buffer_data.size() - idx_offset;
+
+    // ---------------------------------------------------------
+    // Build GLTF model
+    // ---------------------------------------------------------
+    tinygltf::Model model;
+    model.asset.version   = "2.0";
+    model.asset.generator = "KinectFusionQt";
+
+    // Buffer
+    tinygltf::Buffer gltf_buf;
+    gltf_buf.data = buffer_data;
+    model.buffers.push_back(std::move(gltf_buf));
+
+    int buf_idx = 0;
+
+    // Helper: add buffer view
+    auto addBufferView = [&](size_t offset, size_t length, int target) -> int {
+        tinygltf::BufferView bv;
+        bv.buffer     = buf_idx;
+        bv.byteOffset = offset;
+        bv.byteLength = length;
+        bv.target     = target;
+        model.bufferViews.push_back(bv);
+        return static_cast<int>(model.bufferViews.size()) - 1;
+    };
+
+    // Helper: add accessor
+    auto addAccessor = [&](int bv_idx, int component_type, int type, size_t count,
+                           bool has_minmax = false,
+                           std::vector<double> min_v = {},
+                           std::vector<double> max_v = {}) -> int {
+        tinygltf::Accessor acc;
+        acc.bufferView    = bv_idx;
+        acc.byteOffset    = 0;
+        acc.componentType = component_type;
+        acc.type          = type;
+        acc.count         = count;
+        if (has_minmax) { acc.minValues = min_v; acc.maxValues = max_v; }
+        model.accessors.push_back(acc);
+        return static_cast<int>(model.accessors.size()) - 1;
+    };
+
+    // Position buffer view + accessor
+    int bv_pos = addBufferView(pos_offset, pos_length, TINYGLTF_TARGET_ARRAY_BUFFER);
+
+    // Compute bounding box for accessor min/max (required for positions)
+    Eigen::Vector3f bmin( 1e9f,  1e9f,  1e9f);
+    Eigen::Vector3f bmax(-1e9f, -1e9f, -1e9f);
+    for (const auto& p : mesh.positions) {
+        Eigen::Vector3f pg = toGLTF(p);
+        bmin = bmin.cwiseMin(pg);
+        bmax = bmax.cwiseMax(pg);
+    }
+    int acc_pos = addAccessor(bv_pos, TINYGLTF_COMPONENT_TYPE_FLOAT,
+                              TINYGLTF_TYPE_VEC3, nvert, true,
+                              {bmin.x(), bmin.y(), bmin.z()},
+                              {bmax.x(), bmax.y(), bmax.z()});
+
+    int acc_norm = -1;
+    if (has_normals) {
+        int bv_norm = addBufferView(norm_offset, norm_length, TINYGLTF_TARGET_ARRAY_BUFFER);
+        acc_norm = addAccessor(bv_norm, TINYGLTF_COMPONENT_TYPE_FLOAT,
+                               TINYGLTF_TYPE_VEC3, nvert);
+    }
+
+    int acc_col = -1;
+    if (has_colors) {
+        int bv_col = addBufferView(col_offset, col_length, TINYGLTF_TARGET_ARRAY_BUFFER);
+        acc_col = addAccessor(bv_col, TINYGLTF_COMPONENT_TYPE_FLOAT,
+                              TINYGLTF_TYPE_VEC4, nvert);
+    }
+
+    int bv_idx_gltf = addBufferView(idx_offset, idx_length, TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER);
+    int acc_idx = addAccessor(bv_idx_gltf, TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT,
+                              TINYGLTF_TYPE_SCALAR, nidx);
+
+    // Mesh primitive
+    tinygltf::Primitive primitive;
+    primitive.mode               = TINYGLTF_MODE_TRIANGLES;
+    primitive.attributes["POSITION"] = acc_pos;
+    if (acc_norm >= 0) primitive.attributes["NORMAL"] = acc_norm;
+    if (acc_col  >= 0) primitive.attributes["COLOR_0"] = acc_col;
+    primitive.indices            = acc_idx;
+    primitive.material           = 0;
+
+    tinygltf::Mesh gltf_mesh;
+    gltf_mesh.name = "KinectScan";
+    gltf_mesh.primitives.push_back(primitive);
+    model.meshes.push_back(gltf_mesh);
+
+    // Default material
+    tinygltf::Material mat;
+    mat.name = "ScanMaterial";
+    mat.pbrMetallicRoughness.baseColorFactor = {0.72, 0.78, 0.85, 1.0};
+    mat.pbrMetallicRoughness.metallicFactor  = 0.0;
+    mat.pbrMetallicRoughness.roughnessFactor = 0.8;
+    model.materials.push_back(mat);
+
+    // Scene node
+    tinygltf::Node node;
+    node.mesh = 0;
+    // No extra transform: 1 unit = 1 meter, Y-up, already handled by coordinate flip
+    model.nodes.push_back(node);
+
+    tinygltf::Scene scene;
+    scene.nodes.push_back(0);
+    model.scenes.push_back(scene);
+    model.defaultScene = 0;
+
+    // ---------------------------------------------------------
+    // Write GLB
+    // ---------------------------------------------------------
+    tinygltf::TinyGLTF writer;
+    std::string err, warn;
+    bool ok = writer.WriteGltfSceneToFile(&model, filepath,
+        /*embedImages=*/true,
+        /*embedBuffers=*/true,
+        /*prettyPrint=*/false,
+        /*writeBinary=*/true);
+
+    if (!ok) {
+        std::cerr << "[GLB] WriteGltfSceneToFile failed for: " << filepath << "\n";
+        if (!err.empty())  std::cerr << "  Error: " << err << "\n";
+        if (!warn.empty()) std::cerr << "  Warn:  " << warn << "\n";
+        return false;
+    }
+
+    std::cout << "[GLB] Exported " << nvert << " verts, "
+              << nidx/3 << " tris to: " << filepath << "\n";
+    return true;
+}
+
+} // namespace export_io
+} // namespace kfusion
