@@ -2,10 +2,10 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
-#include <vector>
 #include <cstdint>
 #include <atomic>
 #include <shared_mutex>
+#include "utils/CudaUniquePtr.h"
 
 namespace kfusion {
 namespace tsdf {
@@ -104,20 +104,20 @@ private:
 
 #ifdef CUDA_ENABLED
     // GPU state
-    void*   d_voxels_  = nullptr; // Use void* or Voxel* as needed
-    float*  d_depth_   = nullptr;
-    uint8_t* d_rgb_    = nullptr;
+    utils::CudaUniquePtr<void> d_voxels_; // Managed as void since it's passed to kernels
+    utils::CudaUniquePtr<float> d_depth_;
+    utils::CudaUniquePtr<uint8_t> d_rgb_;
     bool    gpu_valid_ = false;
 
-    void* getGPUVoxels() const { return d_voxels_; }
+    void* getGPUVoxels() const { return d_voxels_.get(); }
     void initGPU();
-    void freeGPU();
     void syncToGPU();
     void syncFromGPU();
     void integrateGPU(const float* depth_meters,
                       const uint8_t* rgb,
                       const Eigen::Matrix4f& pose,
-                      float fx, float fy, float cx, float cy,
+                      float fx, float fy, 
+                      float cx, float cy,
                       int width, int height);
 #endif
 };

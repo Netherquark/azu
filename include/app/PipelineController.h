@@ -93,10 +93,10 @@ private:
     std::atomic<bool>          running_{false};
     std::atomic<int>           num_threads_{0}; // 0 = Auto
 
-    // Frame recycling pool (FrameData)
+    // Frame recycling pool (FrameData) - Self-recycling via custom deleter
     static constexpr size_t    DATA_POOL_SIZE = 6;
     std::vector<std::shared_ptr<sensor::FrameData>> data_pool_;
-    std::queue<std::shared_ptr<sensor::FrameData>>  free_data_queue_;
+    std::queue<sensor::FrameData*>                  free_data_queue_;
     std::mutex                                      data_pool_mutex_;
 
     // Raw frame queue (sensor callback → tracking thread)
@@ -116,7 +116,7 @@ private:
 
     // Tracking model frame (double-buffered PingPong)
     struct PingPongModel {
-        tracking::ModelFrame buffers[2];
+        std::shared_ptr<tracking::ModelFrame> buffers[2];
         std::atomic<int>     front_idx{0}; // Read by tracking
         std::atomic<int>     back_idx{1};  // Written by integration
         std::mutex           mtx;

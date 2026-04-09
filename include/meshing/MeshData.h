@@ -3,6 +3,7 @@
 #include <vector>
 #include <Eigen/Core>
 #include <mutex>
+#include <memory>
 
 namespace kfusion {
 namespace meshing {
@@ -52,14 +53,14 @@ struct MeshData {
 // Thread-safe mesh container used between extraction thread and render thread
 class SharedMesh {
 public:
-    void update(MeshData&& mesh) {
+    void update(std::shared_ptr<MeshData> mesh) {
         std::lock_guard<std::mutex> lk(mutex_);
         mesh_ = std::move(mesh);
         version_++;
     }
 
-    // Returns copy for rendering
-    MeshData snapshot(uint64_t& version_out) const {
+    // Returns shared pointer for zero-copy rendering access
+    std::shared_ptr<MeshData> snapshot(uint64_t& version_out) const {
         std::lock_guard<std::mutex> lk(mutex_);
         version_out = version_;
         return mesh_;
@@ -71,8 +72,8 @@ public:
     }
 
 private:
-    mutable std::mutex mutex_;
-    MeshData           mesh_;
+    mutable std::mutex        mutex_;
+    std::shared_ptr<MeshData> mesh_;
     uint64_t           version_ = 0;
 };
 

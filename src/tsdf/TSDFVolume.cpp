@@ -146,9 +146,13 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
     const float vs    = params_.voxel_size;
     const float max_w = params_.max_weight;
 
-    // Camera origin in world space
     const Eigen::Vector3f cam_origin = pose.block<3,1>(0,3);
     const Eigen::Matrix3f R_cw       = pose.block<3,3>(0,0);
+
+    // Pre-compute world-to-camera for the inner loop
+    const Eigen::Matrix4f world_to_cam = pose.inverse();
+    const Eigen::Matrix3f R_rc = world_to_cam.block<3,3>(0,0);
+    const Eigen::Vector3f t_rc = world_to_cam.block<3,1>(0,3);
 
     #pragma omp parallel for schedule(dynamic, 16)
     for (int py = 0; py < H; ++py) {
@@ -166,8 +170,6 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
             float ray_len_unit = ray_cam.norm();
             Eigen::Vector3f ray_world = (R_cw * ray_cam).normalized();
 
-            // We only need to update voxels in [d_meas - trunc, d_meas + trunc]
-            // We sample along the ray with a step of vs (voxel size)
             float t_min = std::max(0.1f, d_meas - trunc);
             float t_max = d_meas + trunc;
 
@@ -180,8 +182,8 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
                 Voxel& vox = voxelAt(vi.x(), vi.y(), vi.z());
                 
                 // Distance from camera to voxel center along camera Z axis
-                // Camera-space voxel position
-                Eigen::Vector3f cpos = pose.inverse().block<3,3>(0,0) * wpos + pose.inverse().block<3,1>(0,3);
+                // Camera-space voxel position: use pre-computed R_rc, t_rc
+                Eigen::Vector3f cpos = R_rc * wpos + t_rc;
                 float dist_to_v = cpos.z();
                 
                 float sdf = d_meas - dist_to_v;

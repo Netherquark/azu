@@ -53,8 +53,21 @@ endif()
 
 # ---- Dependency Resolution ----
 
-# Qt5
-find_package(Qt5 REQUIRED COMPONENTS Widgets OpenGL)
+# Qt5 - Try system paths first, then common Fedora/RHEL paths
+list(APPEND CMAKE_PREFIX_PATH "/usr/lib64/cmake/Qt5" "/usr/lib/cmake/Qt5")
+find_package(Qt5 QUIET COMPONENTS Widgets OpenGL)
+
+if(NOT Qt5_FOUND)
+    # Final fallback via pkg-config
+    pkg_check_modules(QT5_COMPONENTS QUIET Qt5Widgets Qt5OpenGL)
+    if(QT5_COMPONENTS_FOUND)
+        message(STATUS "Qt5 found via pkg-config")
+        set(Qt5_FOUND TRUE)
+    else()
+        message(FATAL_ERROR "Qt5 not found! Ensure 'qt5-qtbase-devel' is installed. Error: ${Qt5_DIR}")
+    endif()
+endif()
+
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 # Note: We use explicit qt5_wrap_cpp below for specific GUI headers to manage complex include paths.
@@ -175,12 +188,7 @@ if(Eigen3_FOUND)
     target_link_libraries(KinectFusionQt PRIVATE Eigen3::Eigen)
 endif()
 
-# tinygltf implementation triggers
-target_compile_definitions(KinectFusionQt PRIVATE
-    TINYGLTF_IMPLEMENTATION
-    STB_IMAGE_IMPLEMENTATION
-    STB_IMAGE_WRITE_IMPLEMENTATION
-)
+# tinygltf implementation moved to GLBExporter.cpp to avoid multiple definition errors
 
 # ---- Diagnostic Summary ----
 

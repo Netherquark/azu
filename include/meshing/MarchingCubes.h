@@ -14,12 +14,12 @@ public:
     MarchingCubes();
     ~MarchingCubes();
 
-    // CPU extraction path (remains static as it's stateless)
-    static MeshData extract(const tsdf::TSDFVolume& volume,
-                            ProgressCallback        cb = nullptr);
+    // CPU extraction path
+    std::shared_ptr<MeshData> extract(const tsdf::TSDFVolume& volume,
+                                      ProgressCallback        cb = nullptr);
 
-    // GPU extraction path (instance-based for buffer management)
-    MeshData extractGPU(const tsdf::TSDFVolume& volume);
+    // GPU extraction path
+    std::shared_ptr<MeshData> extractGPU(const tsdf::TSDFVolume& volume);
 
     // Look-up tables for Marching Cubes
     static const int edge_table[256];

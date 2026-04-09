@@ -267,19 +267,19 @@ ICPResult ICPTracker::trackGPU(const sensor::FramePyramid& live,
         size_t sz = ld.width * ld.height * sizeof(float3);
         
         if (!d_pyramid_v[level]) {
-            cudaMalloc(&d_pyramid_v[level], sz);
-            cudaMalloc(&d_pyramid_n[level], sz);
+            d_pyramid_v[level] = utils::make_cuda_unique<float3>(ld.width * ld.height);
+            d_pyramid_n[level] = utils::make_cuda_unique<float3>(ld.width * ld.height);
         }
         
-        cudaMemcpy(d_pyramid_v[level], ld.vertices.data(), sz, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_pyramid_n[level], ld.normals.data(),  sz, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_pyramid_v[level].get(), ld.vertices.data(), sz, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_pyramid_n[level].get(), ld.normals.data(),  sz, cudaMemcpyHostToDevice);
     }
 
     // 2. Coarse-to-fine iterations
     for (int level = sensor::FramePyramid::LEVELS - 1; level >= 0; --level) {
         result = trackLevelGPU(
-            d_pyramid_v[level], 
-            d_pyramid_n[level],
+            d_pyramid_v[level].get(), 
+            d_pyramid_n[level].get(),
             live.levels[level].width,
             live.levels[level].height,
             model, 

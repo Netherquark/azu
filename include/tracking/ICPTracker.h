@@ -4,10 +4,7 @@
 #include <Eigen/Geometry>
 #include <vector>
 #include "sensor/FrameData.h"
-
-#ifdef CUDA_ENABLED
-#include <cuda_runtime.h>
-#endif
+#include "utils/CudaUniquePtr.h"
 
 namespace kfusion {
 namespace tracking {
@@ -34,8 +31,8 @@ struct ModelFrame {
     std::vector<Eigen::Vector3f> normals;
     
 #ifdef CUDA_ENABLED
-    float3* d_vertices = nullptr;
-    float3* d_normals  = nullptr;
+    utils::CudaUniquePtr<float3> d_vertices;
+    utils::CudaUniquePtr<float3> d_normals;
 #endif
 
     int width  = sensor::FRAME_W;
@@ -46,13 +43,7 @@ struct ModelFrame {
         normals.assign(width * height, Eigen::Vector3f::Zero());
     }
     
-    void freeGPU() {
-#ifdef CUDA_ENABLED
-        if (d_vertices) cudaFree(d_vertices);
-        if (d_normals)  cudaFree(d_normals);
-        d_vertices = d_normals = nullptr;
-#endif
-    }
+    // Use default destructor as CudaUniquePtr handles cleanup
 };
 
 class ICPTracker {
@@ -86,15 +77,14 @@ private:
 
 #ifdef CUDA_ENABLED
     // Persistent GPU buffers to avoid allocations
-    float* d_hessian_ = nullptr; 
+    utils::CudaUniquePtr<float> d_hessian_; 
     
     // Pyramid level buffers
-    float3* d_pyramid_v[sensor::FramePyramid::LEVELS] = {nullptr};
-    float3* d_pyramid_n[sensor::FramePyramid::LEVELS] = {nullptr};
+    utils::CudaUniquePtr<float3> d_pyramid_v[sensor::FramePyramid::LEVELS];
+    utils::CudaUniquePtr<float3> d_pyramid_n[sensor::FramePyramid::LEVELS];
     
     void initGPU();
-    void freeGPU();
-    
+
     ICPResult trackLevelGPU(const float3*            d_v_live,
                             const float3*            d_n_live,
                             int                      width,

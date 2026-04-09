@@ -26,10 +26,15 @@ PipelineController::PipelineController()
     tsdf_    = std::make_unique<tsdf::TSDFVolume>();
     cubes_   = std::make_unique<meshing::MarchingCubes>();
     
-    // Initialize data pool
+    // Initialize data pool for automated recycling
     for (size_t i = 0; i < DATA_POOL_SIZE; ++i) {
         data_pool_.push_back(std::make_shared<sensor::FrameData>());
-        free_data_queue_.push(data_pool_.back());
+        free_data_queue_.push(data_pool_.back().get());
+    }
+
+    // Initialize ping-pong buffers
+    for (int i = 0; i < 2; ++i) {
+        model_pingpong_.buffers[i] = std::make_shared<tracking::ModelFrame>();
     }
 }
 
@@ -67,10 +72,10 @@ bool PipelineController::start() {
 #ifdef CUDA_ENABLED
     tsdf_->initGPU();
     tracker_->initGPU();
-    // Pre-allocate ModelFrame GPU buffers for PingPong
+    // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
     for (int i = 0; i < 2; ++i) {
-        cudaMalloc(&model_pingpong_.buffers[i].d_vertices, sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT * sizeof(float3));
-        cudaMalloc(&model_pingpong_.buffers[i].d_normals,  sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT * sizeof(float3));
+        model_pingpong_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+        model_pingpong_.buffers[i]->d_normals  = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
     }
 #endif
 
@@ -213,8 +218,8 @@ void PipelineController::trackingLoop() {
         sensor::FramePyramid pyramid;
         sensor::buildFramePyramid(*frame, pyramid);
 
-        // Get model frame safely from PingPong storage
-        tracking::ModelFrame model_ref;
+        // Get model frame safely from PingPong storage (ZERO-COPY)
+        std::shared_ptr<tracking::ModelFrame> model_ref;
         {
             std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
             model_ref = model_pingpong_.buffers[model_pingpong_.front_idx.load()];
@@ -228,9 +233,9 @@ void PipelineController::trackingLoop() {
         }
 
 #ifdef CUDA_ENABLED
-        auto icp_result = tracker_->trackGPU(pyramid, model_ref, prev_pose);
+        auto icp_result = tracker_->trackGPU(pyramid, *model_ref, prev_pose);
 #else
-        auto icp_result = tracker_->track(pyramid, model_ref, prev_pose);
+        auto icp_result = tracker_->track(pyramid, *model_ref, prev_pose);
 #endif
 
         // Update tracking fps
@@ -296,30 +301,25 @@ void PipelineController::integrationLoop() {
                          static_cast<float>(sensor::CY),
                          frame->width, frame->height);
 
-        // Raycast into the BACK buffer
-        static int raycast_skip = 0;
-        if (++raycast_skip % 5 == 0) {
+        // 2. Generate model frame for tracking (Ping-Pong back buffer)
+        int integrated_count = tsdf_->integratedFrames();
+        if (integrated_count % 1 == 0) { // Raycast every frame for better tracking
             int back = model_pingpong_.back_idx.load();
+            auto& model_back = *(model_pingpong_.buffers[back]);
+
 #ifdef CUDA_ENABLED
             tsdf_->raycastGPU(frame->pose,
-                              static_cast<float>(sensor::FX),
-                              static_cast<float>(sensor::FY),
-                              static_cast<float>(sensor::CX),
-                              static_cast<float>(sensor::CY),
+                              static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
+                              static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
                               sensor::DEPTH_WIDTH, sensor::DEPTH_HEIGHT,
-                              model_pingpong_.buffers[back].d_vertices,
-                              model_pingpong_.buffers[back].d_normals);
+                              model_back.d_vertices.get(), model_back.d_normals.get());
 #else
             tsdf_->raycast(frame->pose,
-                           static_cast<float>(sensor::FX),
-                           static_cast<float>(sensor::FY),
-                           static_cast<float>(sensor::CX),
-                           static_cast<float>(sensor::CY),
+                           static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
+                           static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
                            sensor::DEPTH_WIDTH, sensor::DEPTH_HEIGHT,
-                           model_pingpong_.buffers[back].vertices.data(),
-                           model_pingpong_.buffers[back].normals.data());
+                           model_back.vertices.data(), model_back.normals.data());
 #endif
-            // Atomic swap
             {
                 std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
                 model_pingpong_.swap();
@@ -366,30 +366,35 @@ void PipelineController::meshingLoop() {
 
         {
             std::lock_guard<std::mutex> lk(metrics_mutex_);
-            metrics_.mesh_triangles   = mesh.triangleCount();
+            metrics_.mesh_triangles   = mesh ? mesh->triangleCount() : 0;
             metrics_.mesh_extract_pct = 100.0f;
         }
 
-        shared_mesh_.update(std::move(mesh));
-
-        if (mesh_ready_cb_) mesh_ready_cb_();
+        if (mesh) {
+            shared_mesh_.update(std::move(mesh));
+            if (mesh_ready_cb_) mesh_ready_cb_();
+        }
     }
 }
 
 bool PipelineController::exportPLY(const std::string& path) {
     uint64_t ver;
-    meshing::MeshData mesh = shared_mesh_.snapshot(ver);
-    if (mesh.empty()) {
+    auto mesh = shared_mesh_.snapshot(ver);
+    if (!mesh || mesh->empty()) {
         std::cout << "[Pipeline] No mesh yet, extracting via meshingLoop...\n";
         mesh_extraction_requested_.store(true);
         int waits = 0;
-        while (shared_mesh_.snapshot(ver).empty() && waits < 100) {
+        while (waits < 100) {
+            auto m = shared_mesh_.snapshot(ver);
+            if (m && !m->empty()) {
+                mesh = m;
+                break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             waits++;
         }
-        mesh = shared_mesh_.snapshot(ver);
     }
-    if (mesh.empty()) {
+    if (!mesh || mesh->empty()) {
         std::cerr << "[Pipeline] No mesh to export — scan more frames first.\n";
         return false;
     }
@@ -397,7 +402,7 @@ bool PipelineController::exportPLY(const std::string& path) {
         std::lock_guard<std::mutex> lk(metrics_mutex_);
         metrics_.export_pct = 50.0f;
     }
-    bool ok = export_io::PLYExporter::writeBinary(mesh, path);
+    bool ok = export_io::PLYExporter::writeBinary(*mesh, path);
     {
         std::lock_guard<std::mutex> lk(metrics_mutex_);
         metrics_.export_pct = ok ? 100.0f : 0.0f;
@@ -407,18 +412,22 @@ bool PipelineController::exportPLY(const std::string& path) {
 
 bool PipelineController::exportGLB(const std::string& path) {
     uint64_t ver;
-    meshing::MeshData mesh = shared_mesh_.snapshot(ver);
-    if (mesh.empty()) {
+    auto mesh = shared_mesh_.snapshot(ver);
+    if (!mesh || mesh->empty()) {
         std::cout << "[Pipeline] No mesh yet, extracting via meshingLoop...\n";
         mesh_extraction_requested_.store(true);
         int waits = 0;
-        while (shared_mesh_.snapshot(ver).empty() && waits < 100) {
+        while (waits < 100) {
+            auto m = shared_mesh_.snapshot(ver);
+            if (m && !m->empty()) {
+                mesh = m;
+                break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             waits++;
         }
-        mesh = shared_mesh_.snapshot(ver);
     }
-    if (mesh.empty()) {
+    if (!mesh || mesh->empty()) {
         std::cerr << "[Pipeline] No mesh to export — scan more frames first.\n";
         return false;
     }
@@ -426,7 +435,7 @@ bool PipelineController::exportGLB(const std::string& path) {
         std::lock_guard<std::mutex> lk(metrics_mutex_);
         metrics_.export_pct = 50.0f;
     }
-    bool ok = export_io::GLBExporter::write(mesh, path);
+    bool ok = export_io::GLBExporter::write(*mesh, path);
     {
         std::lock_guard<std::mutex> lk(metrics_mutex_);
         metrics_.export_pct = ok ? 100.0f : 0.0f;
@@ -437,15 +446,21 @@ bool PipelineController::exportGLB(const std::string& path) {
 std::shared_ptr<sensor::FrameData> PipelineController::acquireFreeData() {
     std::lock_guard<std::mutex> lk(data_pool_mutex_);
     if (free_data_queue_.empty()) return nullptr;
-    auto f = free_data_queue_.front();
+    
+    auto* raw_ptr = free_data_queue_.front();
     free_data_queue_.pop();
-    return f;
+
+    // Zero-out or reset frame data if needed
+    // raw_ptr->reset(); 
+
+    return std::shared_ptr<sensor::FrameData>(raw_ptr, [this, raw_ptr](sensor::FrameData*) {
+        std::lock_guard<std::mutex> lk_inner(this->data_pool_mutex_);
+        this->free_data_queue_.push(raw_ptr);
+    });
 }
 
-void PipelineController::releaseData(std::shared_ptr<sensor::FrameData> data) {
-    if (!data) return;
-    std::lock_guard<std::mutex> lk(data_pool_mutex_);
-    free_data_queue_.push(std::move(data));
+void PipelineController::releaseData(std::shared_ptr<sensor::FrameData>) {
+    // Managed by custom deleter
 }
 
 } // namespace app

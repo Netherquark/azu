@@ -7,8 +7,20 @@
 #include <omp.h>
 #endif
 
+#include <unordered_map>
+
 namespace kfusion {
 namespace meshing {
+
+// Helper for vertex unification
+struct VectorHash {
+    size_t operator()(const Eigen::Vector3f& v) const {
+        size_t h1 = std::hash<float>{}(v.x());
+        size_t h2 = std::hash<float>{}(v.y());
+        size_t h3 = std::hash<float>{}(v.z());
+        return h1 ^ (h2 << 1) ^ (h3 << 2);
+    }
+};
 
 MarchingCubes::MarchingCubes() {}
 MarchingCubes::~MarchingCubes() {
@@ -377,15 +389,15 @@ struct VectorHasher {
     }
 };
 
-MeshData MarchingCubes::extract(const tsdf::TSDFVolume& volume,
-                                 ProgressCallback        progress_cb)
+std::shared_ptr<MeshData> MarchingCubes::extract(const tsdf::TSDFVolume& volume,
+                                            ProgressCallback progress_cb)
 {
-    const auto& p   = volume.params();
-    const int   RES = p.resolution;
-    const float vs  = p.voxel_size;
+    const auto& p     = volume.params();
+    const int   RES_X = p.resolution.x();
+    const int   RES_Y = p.resolution.y();
+    const int   RES_Z = p.resolution.z();
 
-    MeshData mesh;
-    mesh.reserve(RES * RES * 2); // conservative initial reserve
+    std::shared_ptr<MeshData> mesh_final = std::make_shared<MeshData>();
 
     // For vertex unification and smooth normals
     // We'll use a thread-local approach to avoid contention during extraction, 
@@ -411,20 +423,20 @@ MeshData MarchingCubes::extract(const tsdf::TSDFVolume& volume,
         }
     };
 
-    // Parallelize over slices
-    // To keep it thread-safe without massive locking, we collect local meshes per slice 
-    // and merge them. 
-    std::vector<MeshData> slice_meshes(RES - 1);
+    // Parallelize over slices (Z direction)
+    std::vector<MeshData> slice_meshes(RES_Z - 1);
 
     #pragma omp parallel for schedule(dynamic, 4)
-    for (int z = 0; z < RES - 1; ++z) {
+    for (int z = 0; z < RES_Z - 1; ++z) {
+
         if (progress_cb && (z % 10 == 0)) 
-            progress_cb(static_cast<float>(z) / (RES - 2));
+            progress_cb(static_cast<float>(z) / (RES_Z - 2));
 
         auto& local_mesh = slice_meshes[z];
+        const float vs = p.voxel_size;
         
-        for (int y = 0; y < RES - 1; ++y) {
-            for (int x = 0; x < RES - 1; ++x) {
+        for (int y = 0; y < RES_Y - 1; ++y) {
+            for (int x = 0; x < RES_X - 1; ++x) {
                 float corner_vals[8];
                 for (int c = 0; c < 8; ++c) {
                     int cx = x + CORNER_OFFSETS[c][0];
@@ -492,19 +504,37 @@ MeshData MarchingCubes::extract(const tsdf::TSDFVolume& volume,
         }
     }
 
-    // Merge slice meshes into final mesh
+    // Merge results with unified vertex mapping
+    std::shared_ptr<MeshData> total_mesh = std::make_shared<MeshData>();
+    std::unordered_map<Eigen::Vector3f, uint32_t, VectorHash> global_map;
+
     for (const auto& sm : slice_meshes) {
-        uint32_t offset = static_cast<uint32_t>(mesh.positions.size());
-        mesh.positions.insert(mesh.positions.end(), sm.positions.begin(), sm.positions.end());
-        mesh.normals.insert(mesh.normals.end(), sm.normals.begin(), sm.normals.end());
-        mesh.colors.insert(mesh.colors.end(), sm.colors.begin(), sm.colors.end());
-        for (auto idx : sm.indices) {
-            mesh.indices.push_back(idx + offset);
+        if (sm.empty()) continue;
+        
+        for (size_t i = 0; i < sm.indices.size(); ++i) {
+            uint32_t old_idx = sm.indices[i];
+            const auto& pos = sm.positions[old_idx];
+            
+            auto it = global_map.find(pos);
+            if (it != global_map.end()) {
+                total_mesh->indices.push_back(it->second);
+            } else {
+                uint32_t new_idx = static_cast<uint32_t>(total_mesh->positions.size());
+                global_map[pos] = new_idx;
+                total_mesh->positions.push_back(pos);
+                total_mesh->normals.push_back(sm.normals[old_idx]);
+                if (sm.colors.size() == sm.positions.size() * 3) {
+                    total_mesh->colors.push_back(sm.colors[old_idx*3+0]);
+                    total_mesh->colors.push_back(sm.colors[old_idx*3+1]);
+                    total_mesh->colors.push_back(sm.colors[old_idx*3+2]);
+                }
+                total_mesh->indices.push_back(new_idx);
+            }
         }
     }
 
     if (progress_cb) progress_cb(1.0f);
-    return mesh;
+    return total_mesh;
 }
 
 } // namespace meshing

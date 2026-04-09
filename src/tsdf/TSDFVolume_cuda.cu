@@ -134,20 +134,12 @@ __global__ void integrationKernel_PixelParallel(
 // Host-side GPU management
 // -------------------------------------------------------------------
 void TSDFVolume::initGPU() {
-    size_t n = static_cast<size_t>(params_.resolution) * params_.resolution * params_.resolution;
-    cudaMalloc(&d_voxels_, n * sizeof(VoxelGPU));
-    cudaMalloc(&d_depth_, 640 * 480 * sizeof(float));
-    cudaMalloc(&d_rgb_,   640 * 480 * 3 * sizeof(uint8_t));
+    size_t n = static_cast<size_t>(params_.resolution.x()) * params_.resolution.y() * params_.resolution.z();
+    d_voxels_ = utils::make_cuda_unique<void>(n * sizeof(VoxelGPU));
+    d_depth_  = utils::make_cuda_unique<float>(640 * 480);
+    d_rgb_    = utils::make_cuda_unique<uint8_t>(640 * 480 * 3);
     gpu_valid_ = true;
     syncToGPU();
-}
-
-void TSDFVolume::freeGPU() {
-    if (d_voxels_) cudaFree(d_voxels_);
-    if (d_depth_)  cudaFree(d_depth_);
-    if (d_rgb_)    cudaFree(d_rgb_);
-    d_voxels_ = d_depth_ = d_rgb_ = nullptr;
-    gpu_valid_ = false;
 }
 
 void TSDFVolume::syncToGPU() {
@@ -161,14 +153,14 @@ void TSDFVolume::syncToGPU() {
         gpu_data[i].g      = voxels_[i].g;
         gpu_data[i].b      = voxels_[i].b;
     }
-    cudaMemcpy(d_voxels_, gpu_data.data(), n * sizeof(VoxelGPU), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_voxels_.get(), gpu_data.data(), n * sizeof(VoxelGPU), cudaMemcpyHostToDevice);
 }
 
 void TSDFVolume::syncFromGPU() {
     if (!gpu_valid_) return;
     size_t n = voxels_.size();
     std::vector<VoxelGPU> gpu_data(n);
-    cudaMemcpy(gpu_data.data(), d_voxels_, n * sizeof(VoxelGPU), cudaMemcpyDeviceToHost);
+    cudaMemcpy(gpu_data.data(), d_voxels_.get(), n * sizeof(VoxelGPU), cudaMemcpyDeviceToHost);
     for (size_t i = 0; i < n; ++i) {
         float w = gpu_data[i].weight;
         voxels_[i].weight = w;
@@ -191,8 +183,8 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
                                int   width, int height)
 {
     if (!gpu_valid_) return;
-    cudaMemcpy(d_depth_, depth_meters, width * height * sizeof(float), cudaMemcpyHostToDevice);
-    if (rgb) cudaMemcpy(d_rgb_, rgb, width * height * 3, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_depth_.get(), depth_meters, width * height * sizeof(float), cudaMemcpyHostToDevice);
+    if (rgb) cudaMemcpy(d_rgb_.get(), rgb, width * height * 3, cudaMemcpyHostToDevice);
 
     Eigen::Matrix3f R_cw = pose.block<3,3>(0,0);
     Eigen::Vector3f t_cw = pose.block<3,1>(0,3);
@@ -205,8 +197,8 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
     integrationKernel_PixelParallel<<<grid, block>>>(
-        (VoxelGPU*)d_voxels_, params_.resolution, params_.voxel_size, origin, params_.truncation, params_.max_weight,
-        d_depth_, d_rgb_, width, height, fx, fy, cx, cy,
+        (VoxelGPU*)d_voxels_.get(), params_.resolution.x(), params_.voxel_size, origin, params_.truncation, params_.max_weight,
+        d_depth_.get(), d_rgb_.get(), width, height, fx, fy, cx, cy,
         R_cw(0,0), R_cw(0,1), R_cw(0,2), R_cw(1,0), R_cw(1,1), R_cw(1,2), R_cw(2,0), R_cw(2,1), R_cw(2,2),
         t_cw.x(), t_cw.y(), t_cw.z(),
         R_wc(0,0), R_wc(0,1), R_wc(0,2), R_wc(1,0), R_wc(1,1), R_wc(1,2), R_wc(2,0), R_wc(2,1), R_wc(2,2),
@@ -332,7 +324,7 @@ void TSDFVolume::raycastGPU(const Eigen::Matrix4f& pose,
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
     raycastKernel<<<grid, block>>>(
-        d_voxels_, params_.resolution, params_.voxel_size, f_origin,
+        d_voxels_.get(), params_.resolution.x(), params_.voxel_size, f_origin,
         fx, fy, cx, cy,
         R(0,0), R(0,1), R(0,2), t.x(),
         R(1,0), R(1,1), R(1,2), t.y(),
