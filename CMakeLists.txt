@@ -1,119 +1,109 @@
 cmake_minimum_required(VERSION 3.18)
 project(KinectFusionQt VERSION 1.0.0 LANGUAGES CXX)
 
+# ---- General Configuration ----
+
 # C++17 required
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Build type
+# Export compile commands for LSP support (clangd)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Build type defaults to Release
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
+# Optimized build flags
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
+    # Enable LTO (Interprocedural Optimization) if supported
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
+    if(ipo_supported)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        message(STATUS "LTO/IPO enabled for optimized performance")
+    endif()
+else()
+    set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG -Wall -Wextra")
+endif()
 
-# Optional CUDA
+# ---- Optional CUDA Configuration ----
+
 include(CheckLanguage)
 check_language(CUDA)
+
 if(CMAKE_CUDA_COMPILER)
     enable_language(CUDA)
     set(CUDA_AVAILABLE TRUE)
     add_compile_definitions(CUDA_ENABLED)
     set(CMAKE_CUDA_STANDARD 17)
-    set(CMAKE_CUDA_ARCHITECTURES 86) # RTX 5070 (Ampere/Ada - use 89 for Ada Lovelace)
-    message(STATUS "CUDA found: ${CMAKE_CUDA_COMPILER}")
+    
+    # Target architectures: 86 (Ampere), 89 (Ada), 100 (Blackwell/RTX 50-series)
+    # Using 'native' if available (CMake 3.24+) or a sensible default list
+    set(CMAKE_CUDA_ARCHITECTURES 86 89 100) 
+    
+    message(STATUS "CUDA found: ${CMAKE_CUDA_COMPILER} (Archs: ${CMAKE_CUDA_ARCHITECTURES})")
 else()
     set(CUDA_AVAILABLE FALSE)
-    message(STATUS "CUDA not found - using CPU fallback paths")
+    message(STATUS "CUDA not found - falling back to CPU-only implementation")
 endif()
+
+# ---- Dependency Resolution ----
 
 # Qt5
 find_package(Qt5 REQUIRED COMPONENTS Widgets OpenGL)
-# Do NOT use AUTOMOC globally — we use qt5_wrap_cpp explicitly for GUI headers
-# to avoid AUTOMOC missing Q_OBJECT headers that live in include/ not src/
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
+# Note: We use explicit qt5_wrap_cpp below for specific GUI headers to manage complex include paths.
 
-# libfreenect
+# libfreenect (Kinect v1)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FREENECT REQUIRED libfreenect)
 
 # OpenGL
 find_package(OpenGL REQUIRED)
 
-# Eigen (bundled or system)
+# Eigen (Check system first, then local fallback)
 find_package(Eigen3 QUIET)
 if(NOT Eigen3_FOUND)
-    message(STATUS "System Eigen3 not found, using bundled")
-    set(EIGEN3_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/eigen)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/eigen")
+        message(STATUS "System Eigen3 not found, using bundled copy in third_party/eigen")
+        set(EIGEN3_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/eigen")
+    else()
+        message(FATAL_ERROR "Eigen3 not found! Please run 'bash scripts/fetch_deps.sh' to download it.")
+    endif()
 endif()
 
-# OpenMP
+# OpenMP for CPU parallelism
 find_package(OpenMP)
 
 # Threads
 find_package(Threads REQUIRED)
 
-# tinygltf (header-only, bundled)
-set(TINYGLTF_DIR ${CMAKE_SOURCE_DIR}/third_party/tinygltf)
+# tinygltf (bundle path)
+set(TINYGLTF_DIR "${CMAKE_SOURCE_DIR}/third_party/tinygltf")
+if(NOT EXISTS "${TINYGLTF_DIR}/tiny_gltf.h")
+    message(FATAL_ERROR "tinygltf headers missing! Please run 'bash scripts/fetch_deps.sh'")
+endif()
 
-# ---- Source files ----
+# ---- Source Organization ----
 
-set(SENSOR_SOURCES
-    src/sensor/KinectSensor.cpp
-    src/sensor/FrameData.cpp
-)
-
-set(TRACKING_SOURCES
-    src/tracking/ICPTracker.cpp
-    src/tracking/PyramidLevel.cpp
-)
-
-set(TSDF_SOURCES
-    src/tsdf/TSDFVolume.cpp
-)
-
-set(MESHING_SOURCES
-    src/meshing/MarchingCubes.cpp
-    src/meshing/MeshData.cpp
-)
-
-set(RENDERING_SOURCES
-    src/rendering/PreviewRenderer.cpp
-    src/rendering/ShaderProgram.cpp
-    src/rendering/Camera.cpp
-)
-
-set(EXPORT_SOURCES
-    src/export/PLYExporter.cpp
-    src/export/GLBExporter.cpp
-)
-
-set(GUI_SOURCES
-    src/gui/MainWindow.cpp
-    src/gui/OpenGLWidget.cpp
-    src/gui/MetricsPanel.cpp
-    src/gui/ControlPanel.cpp
-)
-
-set(APP_SOURCES
-    src/app/Application.cpp
-    src/app/PipelineController.cpp
-    src/app/JobSystem.cpp
-)
-
-set(UTILS_SOURCES
-    src/utils/Logger.cpp
-    src/utils/RingBuffer.cpp
-    src/utils/Timer.cpp
-)
-
-set(MAIN_SOURCE src/main.cpp)
+# Grouping by module
+file(GLOB_RECURSE SENSOR_SOURCES CONFIGURE_DEPENDS "src/sensor/*.cpp")
+file(GLOB_RECURSE TRACKING_SOURCES CONFIGURE_DEPENDS "src/tracking/*.cpp")
+file(GLOB_RECURSE TSDF_SOURCES CONFIGURE_DEPENDS "src/tsdf/*.cpp")
+file(GLOB_RECURSE MESHING_SOURCES CONFIGURE_DEPENDS "src/meshing/*.cpp")
+file(GLOB_RECURSE RENDERING_SOURCES CONFIGURE_DEPENDS "src/rendering/*.cpp")
+file(GLOB_RECURSE EXPORT_SOURCES CONFIGURE_DEPENDS "src/export/*.cpp")
+file(GLOB_RECURSE GUI_SOURCES CONFIGURE_DEPENDS "src/gui/*.cpp")
+file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS "src/app/*.cpp")
+file(GLOB_RECURSE UTILS_SOURCES CONFIGURE_DEPENDS "src/utils/*.cpp")
 
 set(ALL_SOURCES
-    ${MAIN_SOURCE}
+    src/main.cpp
     ${SENSOR_SOURCES}
     ${TRACKING_SOURCES}
     ${TSDF_SOURCES}
@@ -126,27 +116,16 @@ set(ALL_SOURCES
 )
 
 if(CUDA_AVAILABLE)
-    set(CUDA_SOURCES
-        src/tsdf/TSDFVolume_cuda.cu
-        src/tracking/ICPTracker_cuda.cu
-    )
+    file(GLOB_RECURSE CUDA_SOURCES CONFIGURE_DEPENDS "src/*.cu")
     list(APPEND ALL_SOURCES ${CUDA_SOURCES})
 endif()
 
-# ---- Target ----
+# ---- Build Target ----
 
 add_executable(KinectFusionQt ${ALL_SOURCES})
 
-# Force Qt AUTOMOC to process GUI headers containing Q_OBJECT
-set_source_files_properties(
-    include/gui/MainWindow.h
-    include/gui/OpenGLWidget.h
-    include/gui/MetricsPanel.h
-    include/gui/ControlPanel.h
-    PROPERTIES SKIP_AUTOMOC OFF
-)
-
-# Explicit MOC generation for all Q_OBJECT headers (reliable across include paths)
+# Qt MOC generation
+# We explicitly list headers that require MOC to ensure they are found regardless of search depth
 set(MOC_HEADERS
     include/gui/MainWindow.h
     include/gui/OpenGLWidget.h
@@ -159,17 +138,16 @@ qt5_wrap_cpp(MOC_SOURCES ${MOC_HEADERS}
 )
 target_sources(KinectFusionQt PRIVATE ${MOC_SOURCES})
 
-# Include dirs
+# Include Directories
 target_include_directories(KinectFusionQt PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/src" # Needed for some CUDA internal includes
+    "${TINYGLTF_DIR}"
     ${EIGEN3_INCLUDE_DIR}
     ${FREENECT_INCLUDE_DIRS}
-    ${TINYGLTF_DIR}
-    ${OPENGL_INCLUDE_DIR}
 )
 
-# Link libraries
+# Link Libraries
 target_link_libraries(KinectFusionQt PRIVATE
     Qt5::Widgets
     Qt5::OpenGL
@@ -193,17 +171,27 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(KinectFusionQt PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-# Eigen is header-only
 if(Eigen3_FOUND)
     target_link_libraries(KinectFusionQt PRIVATE Eigen3::Eigen)
 endif()
 
-# tinygltf defines
+# tinygltf implementation triggers
 target_compile_definitions(KinectFusionQt PRIVATE
     TINYGLTF_IMPLEMENTATION
     STB_IMAGE_IMPLEMENTATION
     STB_IMAGE_WRITE_IMPLEMENTATION
 )
 
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "CUDA enabled: ${CUDA_AVAILABLE}")
+# ---- Diagnostic Summary ----
+
+message(STATUS "--------------------------------------------")
+message(STATUS "KinectFusionQt Configuration Summary:")
+message(STATUS "  Build Type:   ${CMAKE_BUILD_TYPE}")
+message(STATUS "  CUDA Support: ${CUDA_AVAILABLE}")
+if(CUDA_AVAILABLE)
+    message(STATUS "  CUDA Arch:    ${CMAKE_CUDA_ARCHITECTURES}")
+endif()
+message(STATUS "  OpenMP:       ${OpenMP_CXX_FOUND}")
+message(STATUS "  Qt Version:   ${Qt5_VERSION}")
+message(STATUS "--------------------------------------------")
+
