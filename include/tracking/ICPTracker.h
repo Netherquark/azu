@@ -5,6 +5,10 @@
 #include <vector>
 #include "sensor/FrameData.h"
 
+#ifdef CUDA_ENABLED
+#include <cuda_runtime.h>
+#endif
+
 namespace kfusion {
 namespace tracking {
 
@@ -28,6 +32,12 @@ struct ICPResult {
 struct ModelFrame {
     std::vector<Eigen::Vector3f> vertices;
     std::vector<Eigen::Vector3f> normals;
+    
+#ifdef CUDA_ENABLED
+    float3* d_vertices = nullptr;
+    float3* d_normals  = nullptr;
+#endif
+
     int width  = sensor::FRAME_W;
     int height = sensor::FRAME_H;
 
@@ -35,29 +45,54 @@ struct ModelFrame {
         vertices.assign(width * height, Eigen::Vector3f::Zero());
         normals.assign(width * height, Eigen::Vector3f::Zero());
     }
+    
+    void freeGPU() {
+#ifdef CUDA_ENABLED
+        if (d_vertices) cudaFree(d_vertices);
+        if (d_normals)  cudaFree(d_normals);
+        d_vertices = d_normals = nullptr;
+#endif
+    }
 };
 
 class ICPTracker {
 public:
     explicit ICPTracker(const ICPParams& params = ICPParams{});
 
-    // Track: given live pyramid + previous model frame + previous pose → new pose
+    // Track: given live pyramid + previous model frame    // Track frame against model
     ICPResult track(const sensor::FramePyramid& live,
                     const ModelFrame&           model,
-                    const Eigen::Matrix4f&      prev_pose);
+                    const Eigen::Matrix4f&      pose_estimate);
+
+#ifdef CUDA_ENABLED
+    ICPResult trackGPU(const sensor::FramePyramid& live,
+                       const ModelFrame&           model,
+                       const Eigen::Matrix4f&      pose_estimate);
+#endif
 
     const ICPParams& params() const { return params_; }
 
-private:
-    ICPParams params_;
-
-    // Per-level ICP
-    ICPResult trackLevel(const sensor::FrameData& live_level,
-                         const ModelFrame&        model,
-                         const Eigen::Matrix4f&   pose_estimate,
-                         const Eigen::Matrix4f&   ref_pose,
-                         int                      level,
-                         int                      max_iter);
+#ifdef CUDA_ENABLED
+    // Persistent GPU buffers to avoid allocations
+    float* d_hessian_ = nullptr; 
+    
+    // Pyramid level buffers
+    float3* d_pyramid_v[sensor::FramePyramid::LEVELS] = {nullptr};
+    float3* d_pyramid_n[sensor::FramePyramid::LEVELS] = {nullptr};
+    
+    void initGPU();
+    void freeGPU();
+    
+    ICPResult trackLevelGPU(const float3*            d_v_live,
+                            const float3*            d_n_live,
+                            int                      width,
+                            int                      height,
+                            const ModelFrame&        model,
+                            const Eigen::Matrix4f&   pose_estimate,
+                            const Eigen::Matrix4f&   ref_pose,
+                            int                      level,
+                            int                      max_iter);
+#endif
 
     // Point-to-plane linear system build
     bool buildLinearSystem(const sensor::FrameData& live,

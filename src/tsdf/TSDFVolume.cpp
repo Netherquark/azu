@@ -214,6 +214,19 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
                          Eigen::Vector3f* vertices_out,
                          Eigen::Vector3f* normals_out) const
 {
+#ifdef CUDA_ENABLED
+    // In a fully GPU-resident pipeline, raycast output should stay on GPU.
+    // For now, we sync if host pointers are provided.
+    // In realistic scenarios, ICP will call raycastGPU directly.
+    static float3 *d_v = nullptr, *d_n = nullptr;
+    if (!d_v) {
+        cudaMalloc(&d_v, width * height * sizeof(float3));
+        cudaMalloc(&d_n, width * height * sizeof(float3));
+    }
+    const_cast<TSDFVolume*>(this)->raycastGPU(pose, fx, fy, cx, cy, width, height, d_v, d_n);
+    cudaMemcpy(vertices_out, d_v, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
+    cudaMemcpy(normals_out,  d_v, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
+#else
     std::shared_lock<std::shared_mutex> lk(mutex_);
     const float step     = params_.voxel_size;        // full voxel step (faster)
     const float max_dist = params_.resolution * params_.voxel_size * 1.73f;

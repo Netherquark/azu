@@ -104,8 +104,12 @@ private:
 
 #ifdef CUDA_ENABLED
     // GPU state
-    Voxel*  d_voxels_ = nullptr;
+    void*   d_voxels_  = nullptr; // Use void* or Voxel* as needed
+    float*  d_depth_   = nullptr;
+    uint8_t* d_rgb_    = nullptr;
     bool    gpu_valid_ = false;
+
+    void* getGPUVoxels() const { return d_voxels_; }
     void initGPU();
     void freeGPU();
     void syncToGPU();

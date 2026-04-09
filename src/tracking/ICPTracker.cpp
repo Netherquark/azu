@@ -243,3 +243,49 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
 
 } // namespace tracking
 } // namespace kfusion
+#ifdef CUDA_ENABLED
+ICPResult ICPTracker::trackGPU(const sensor::FramePyramid& live,
+                               const ModelFrame&           model,
+                               const Eigen::Matrix4f&      pose_estimate)
+{
+    ICPResult result;
+    result.pose = pose_estimate;
+    result.tracking_ok = true;
+
+    // 1. Upload live pyramid to GPU buffers
+    for (int level = 0; level < sensor::FramePyramid::LEVELS; ++level) {
+        const auto& ld = live.levels[level];
+        size_t sz = ld.width * ld.height * sizeof(float3);
+        
+        if (!d_pyramid_v[level]) {
+            cudaMalloc(&d_pyramid_v[level], sz);
+            cudaMalloc(&d_pyramid_n[level], sz);
+        }
+        
+        cudaMemcpy(d_pyramid_v[level], ld.vertices.data(), sz, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_pyramid_n[level], ld.normals.data(),  sz, cudaMemcpyHostToDevice);
+    }
+
+    // 2. Coarse-to-fine iterations
+    for (int level = sensor::FramePyramid::LEVELS - 1; level >= 0; --level) {
+        result = trackLevelGPU(
+            d_pyramid_v[level], 
+            d_pyramid_n[level],
+            live.levels[level].width,
+            live.levels[level].height,
+            model, 
+            result.pose, 
+            pose_estimate, 
+            level, 
+            params_.max_iterations[level]
+        );
+        
+        if (result.inliers < 100) {
+            result.tracking_ok = false;
+            break;
+        }
+    }
+
+    return result;
+}
+#endif

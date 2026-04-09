@@ -8,6 +8,10 @@
 #include <chrono>
 #include <cmath>
 
+#ifdef CUDA_ENABLED
+#include <cuda_runtime.h>
+#endif
+
 namespace kfusion {
 namespace app {
 
@@ -52,6 +56,14 @@ bool PipelineController::start() {
         return false;
     }
 
+#ifdef CUDA_ENABLED
+    tsdf_->initGPU();
+    tracker_->initGPU();
+    // Pre-allocate ModelFrame GPU buffers
+    cudaMalloc(&model_frame_.d_vertices, sensor::FRAME_W * sensor::FRAME_H * sizeof(float3));
+    cudaMalloc(&model_frame_.d_normals,  sensor::FRAME_W * sensor::FRAME_H * sizeof(float3));
+#endif
+
     // Launch pipeline threads
     tracking_thread_    = std::thread(&PipelineController::trackingLoop, this);
     integration_thread_ = std::thread(&PipelineController::integrationLoop, this);
@@ -77,6 +89,12 @@ void PipelineController::stop() {
     if (tracking_thread_.joinable())    tracking_thread_.join();
     if (integration_thread_.joinable()) integration_thread_.join();
     if (meshing_thread_.joinable())     meshing_thread_.join();
+
+#ifdef CUDA_ENABLED
+    tsdf_->freeGPU();
+    tracker_->freeGPU();
+    model_frame_.freeGPU();
+#endif
 }
 
 void PipelineController::reset() {
@@ -189,7 +207,11 @@ void PipelineController::trackingLoop() {
             prev_pose = current_pose_;
         }
 
+#ifdef CUDA_ENABLED
+        auto icp_result = tracker_->trackGPU(pyramid, model, prev_pose);
+#else
         auto icp_result = tracker_->track(pyramid, model, prev_pose);
+#endif
 
         // Update tracking fps
         auto now = steady_clock::now();
@@ -260,6 +282,17 @@ void PipelineController::integrationLoop() {
         static int raycast_skip = 0;
         if (++raycast_skip % 5 == 0) {
             std::lock_guard<std::mutex> lk(model_frame_mutex_);
+#ifdef CUDA_ENABLED
+            tsdf_->raycastGPU(pose,
+                              static_cast<float>(sensor::FX),
+                              static_cast<float>(sensor::FY),
+                              static_cast<float>(sensor::CX),
+                              static_cast<float>(sensor::CY),
+                              sensor::FRAME_W, sensor::FRAME_H,
+                              model_frame_.d_vertices,
+                              model_frame_.d_normals);
+            // Optionally sync to CPU if UI needs it, but we keep it on GPU for tracking
+#else
             tsdf_->raycast(pose,
                            static_cast<float>(sensor::FX),
                            static_cast<float>(sensor::FY),
@@ -268,6 +301,7 @@ void PipelineController::integrationLoop() {
                            sensor::FRAME_W, sensor::FRAME_H,
                            model_frame_.vertices.data(),
                            model_frame_.normals.data());
+#endif
         }
 
         {
@@ -295,11 +329,15 @@ void PipelineController::meshingLoop() {
 
         mesh_extract_progress_.store(0.0f);
 
+#ifdef CUDA_ENABLED
+        auto mesh = meshing::MarchingCubes::extractGPU(*tsdf_);
+#else
         auto mesh = meshing::MarchingCubes::extract(*tsdf_, [this](float p) {
             mesh_extract_progress_.store(p);
             std::lock_guard<std::mutex> lk(metrics_mutex_);
             metrics_.mesh_extract_pct = p * 100.0f;
         });
+#endif
 
         {
             std::lock_guard<std::mutex> lk(metrics_mutex_);

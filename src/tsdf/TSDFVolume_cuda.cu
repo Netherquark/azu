@@ -13,16 +13,18 @@ namespace tsdf {
 // Device structs
 // -------------------------------------------------------------------
 struct VoxelGPU {
-    float   tsdf;
+    float   tsdf;   // stores weighted TSDF sum
     float   weight;
-    uint8_t r, g, b;
-    uint8_t pad[3]; // alignment
+    float   r_sum;  // weighted color sums
+    float   g_sum;
+    float   b_sum;
+    float   padding[3]; // align to 32 bytes for performance
 };
 
 // -------------------------------------------------------------------
-// Integration kernel
+// Integration kernel: Image-Centric (Pixel Parallel)
 // -------------------------------------------------------------------
-__global__ void integrationKernel(
+__global__ void integrationKernel_PixelParallel(
     VoxelGPU*      voxels,
     int            resolution,
     float          voxel_size,
@@ -35,60 +37,71 @@ __global__ void integrationKernel(
     int            height,
     float          fx, float fy,
     float          cx, float cy,
-    // World-to-camera (row-major 4x4, but we pass 3x3 R + 3 t)
-    float r00, float r01, float r02,
-    float r10, float r11, float r12,
-    float r20, float r21, float r22,
-    float tx,  float ty,  float tz)
+    // Camera-to-world (for ray direction)
+    float rcw00, float rcw01, float rcw02,
+    float rcw10, float rcw11, float rcw12,
+    float rcw20, float rcw21, float rcw22,
+    float tcw_x, float tcw_y, float tcw_z,
+    // World-to-camera (for voxel projection)
+    float rwc00, float rwc01, float rwc02,
+    float rwc10, float rwc11, float rwc12,
+    float rwc20, float rwc21, float rwc22,
+    float twc_x, float twc_y, float twc_z)
 {
-    int xi = blockIdx.x * blockDim.x + threadIdx.x;
-    int yi = blockIdx.y * blockDim.y + threadIdx.y;
-    int zi = blockIdx.z * blockDim.z + threadIdx.z;
+    int px = blockIdx.x * blockDim.x + threadIdx.x;
+    int py = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (xi >= resolution || yi >= resolution || zi >= resolution) return;
+    if (px >= width || py >= height) return;
 
-    // World pos of voxel center
-    float wx = origin.x + xi * voxel_size + voxel_size * 0.5f;
-    float wy = origin.y + yi * voxel_size + voxel_size * 0.5f;
-    float wz = origin.z + zi * voxel_size + voxel_size * 0.5f;
-
-    // Camera pos
-    float cx_ = r00*wx + r01*wy + r02*wz + tx;
-    float cy_ = r10*wx + r11*wy + r12*wz + ty;
-    float cz_ = r20*wx + r21*wy + r22*wz + tz;
-
-    if (cz_ <= 0.0f) return;
-
-    float px = fx * cx_ / cz_ + cx;
-    float py = fy * cy_ / cz_ + cy;
-
-    int ix = (int)(px + 0.5f);
-    int iy = (int)(py + 0.5f);
-    if (ix < 0 || ix >= width || iy < 0 || iy >= height) return;
-
-    float d_meas = depth[iy * width + ix];
+    float d_meas = depth[py * width + px];
     if (d_meas <= 0.0f) return;
 
-    float sdf = d_meas - cz_;
-    if (sdf < -truncation) return;
+    // Ray direction in camera space
+    float rx_c = (px - cx) / fx;
+    float ry_c = (py - cy) / fy;
+    float rz_c = 1.0f;
 
-    float tsdf_new = fminf(1.0f, sdf / truncation);
+    // Normalize ray in world space
+    float rx_w = rcw00*rx_c + rcw01*ry_c + rcw02*rz_c;
+    float ry_w = rcw10*rx_c + rcw11*ry_c + rcw12*rz_c;
+    float rz_w = rcw20*rx_c + rcw21*ry_c + rcw22*rz_c;
+    float inv_len = 1.0f / sqrtf(rx_w*rx_w + ry_w*ry_w + rz_w*rz_w);
+    rx_w *= inv_len; ry_w *= inv_len; rz_w *= inv_len;
 
-    int linear_idx = zi * resolution * resolution + yi * resolution + xi;
-    VoxelGPU& vox = voxels[linear_idx];
+    float t_min = fmaxf(0.1f, d_meas - truncation);
+    float t_max = d_meas + truncation;
+    float step  = voxel_size * 0.75f;
 
-    float w_old = vox.weight;
-    float w_new = 1.0f;
-    float w_sum = fminf(w_old + w_new, max_weight);
+    for (float t = t_min; t <= t_max; t += step) {
+        float wx = tcw_x + rx_w * t;
+        float wy = tcw_y + ry_w * t;
+        float wz = tcw_z + rz_w * t;
 
-    vox.tsdf   = (vox.tsdf * w_old + tsdf_new * w_new) / (w_old + w_new + 1e-10f);
-    vox.weight = w_sum;
+        int vx = (int)((wx - origin.x) / voxel_size);
+        int vy = (int)((wy - origin.y) / voxel_size);
+        int vz = (int)((wz - origin.z) / voxel_size);
 
-    if (rgb) {
-        int pidx = iy * width + ix;
-        vox.r = (uint8_t)((vox.r * w_old + rgb[pidx*3+0] * w_new) / (w_old + w_new + 1e-6f));
-        vox.g = (uint8_t)((vox.g * w_old + rgb[pidx*3+1] * w_new) / (w_old + w_new + 1e-6f));
-        vox.b = (uint8_t)((vox.b * w_old + rgb[pidx*3+2] * w_new) / (w_old + w_new + 1e-6f));
+        if (vx < 0 || vx >= resolution || vy < 0 || vy >= resolution || vz < 0 || vz >= resolution)
+            continue;
+
+        float cz_ = rwc20*wx + rwc21*wy + rwc22*wz + twc_z;
+        float sdf = d_meas - cz_;
+        if (sdf < -truncation) continue;
+
+        float tsdf_new = fminf(1.0f, sdf / truncation);
+        int lidx = vz * resolution * resolution + vy * resolution + vx;
+        VoxelGPU& vox = voxels[lidx];
+
+        // Atomic integration
+        atomicAdd(&vox.tsdf, tsdf_new);
+        atomicAdd(&vox.weight, 1.0f);
+        
+        if (rgb) {
+            int pidx = py * width + px;
+            atomicAdd(&vox.r_sum, (float)rgb[pidx*3+0]);
+            atomicAdd(&vox.g_sum, (float)rgb[pidx*3+1]);
+            atomicAdd(&vox.b_sum, (float)rgb[pidx*3+2]);
+        }
     }
 }
 
@@ -97,61 +110,51 @@ __global__ void integrationKernel(
 // -------------------------------------------------------------------
 void TSDFVolume::initGPU() {
     size_t n = static_cast<size_t>(params_.resolution) * params_.resolution * params_.resolution;
-    size_t bytes = n * sizeof(VoxelGPU);
-
-    cudaError_t err = cudaMalloc(&d_voxels_, bytes);
-    if (err != cudaSuccess) {
-        std::cerr << "[TSDF GPU] cudaMalloc failed: " << cudaGetErrorString(err) << "\n";
-        d_voxels_  = nullptr;
-        gpu_valid_ = false;
-        return;
-    }
-
+    cudaMalloc(&d_voxels_, n * sizeof(VoxelGPU));
+    cudaMalloc(&d_depth_, 640 * 480 * sizeof(float));
+    cudaMalloc(&d_rgb_,   640 * 480 * 3 * sizeof(uint8_t));
     gpu_valid_ = true;
     syncToGPU();
 }
 
 void TSDFVolume::freeGPU() {
-    if (d_voxels_) {
-        cudaFree(d_voxels_);
-        d_voxels_  = nullptr;
-        gpu_valid_ = false;
-    }
+    if (d_voxels_) cudaFree(d_voxels_);
+    if (d_depth_)  cudaFree(d_depth_);
+    if (d_rgb_)    cudaFree(d_rgb_);
+    d_voxels_ = d_depth_ = d_rgb_ = nullptr;
+    gpu_valid_ = false;
 }
 
 void TSDFVolume::syncToGPU() {
-    if (!gpu_valid_ || !d_voxels_) return;
-
-    size_t n     = voxels_.size();
-    size_t bytes = n * sizeof(VoxelGPU);
-
-    // Build GPU-layout copy
+    if (!gpu_valid_) return;
+    size_t n = voxels_.size();
     std::vector<VoxelGPU> gpu_data(n);
     for (size_t i = 0; i < n; ++i) {
-        gpu_data[i].tsdf   = voxels_[i].tsdf;
+        gpu_data[i].tsdf   = voxels_[i].tsdf * voxels_[i].weight;
         gpu_data[i].weight = voxels_[i].weight;
-        gpu_data[i].r      = voxels_[i].r;
-        gpu_data[i].g      = voxels_[i].g;
-        gpu_data[i].b      = voxels_[i].b;
+        gpu_data[i].r_sum  = voxels_[i].r * voxels_[i].weight;
+        gpu_data[i].g_sum  = voxels_[i].g * voxels_[i].weight;
+        gpu_data[i].b_sum  = voxels_[i].b * voxels_[i].weight;
     }
-
-    cudaMemcpy(d_voxels_, gpu_data.data(), bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_voxels_, gpu_data.data(), n * sizeof(VoxelGPU), cudaMemcpyHostToDevice);
 }
 
 void TSDFVolume::syncFromGPU() {
-    if (!gpu_valid_ || !d_voxels_) return;
-
+    if (!gpu_valid_) return;
     size_t n = voxels_.size();
     std::vector<VoxelGPU> gpu_data(n);
-    cudaMemcpy(gpu_data.data(), d_voxels_,
-               n * sizeof(VoxelGPU), cudaMemcpyDeviceToHost);
-
+    cudaMemcpy(gpu_data.data(), d_voxels_, n * sizeof(VoxelGPU), cudaMemcpyDeviceToHost);
     for (size_t i = 0; i < n; ++i) {
-        voxels_[i].tsdf   = gpu_data[i].tsdf;
-        voxels_[i].weight = gpu_data[i].weight;
-        voxels_[i].r      = gpu_data[i].r;
-        voxels_[i].g      = gpu_data[i].g;
-        voxels_[i].b      = gpu_data[i].b;
+        float w = gpu_data[i].weight;
+        voxels_[i].weight = fminf(w, params_.max_weight);
+        if (w > 0.001f) {
+            voxels_[i].tsdf = gpu_data[i].tsdf / w;
+            voxels_[i].r = (uint8_t)fminf(255.0f, gpu_data[i].r_sum / w);
+            voxels_[i].g = (uint8_t)fminf(255.0f, gpu_data[i].g_sum / w);
+            voxels_[i].b = (uint8_t)fminf(255.0f, gpu_data[i].b_sum / w);
+        } else {
+            voxels_[i].tsdf = 1.0f;
+        }
     }
 }
 
@@ -162,68 +165,158 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
                                float cx, float cy,
                                int   width, int height)
 {
-    if (!gpu_valid_ || !d_voxels_) {
-        // Fallback to CPU
-        integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height);
-        return;
-    }
+    if (!gpu_valid_) return;
+    cudaMemcpy(d_depth_, depth_meters, width * height * sizeof(float), cudaMemcpyHostToDevice);
+    if (rgb) cudaMemcpy(d_rgb_, rgb, width * height * 3, cudaMemcpyHostToDevice);
 
-    // Upload depth and rgb to GPU
-    float*   d_depth = nullptr;
-    uint8_t* d_rgb   = nullptr;
+    Eigen::Matrix3f R_cw = pose.block<3,3>(0,0);
+    Eigen::Vector3f t_cw = pose.block<3,1>(0,3);
+    Eigen::Matrix4f inv  = pose.inverse();
+    Eigen::Matrix3f R_wc = inv.block<3,3>(0,0);
+    Eigen::Vector3f t_wc = inv.block<3,1>(0,3);
 
-    size_t depth_bytes = static_cast<size_t>(width * height) * sizeof(float);
-    size_t rgb_bytes   = static_cast<size_t>(width * height) * 3;
+    float3 origin = {params_.origin.x(), params_.origin.y(), params_.origin.z()};
+    dim3 block(16, 16);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
-    cudaMalloc(&d_depth, depth_bytes);
-    cudaMemcpy(d_depth, depth_meters, depth_bytes, cudaMemcpyHostToDevice);
-
-    if (rgb) {
-        cudaMalloc(&d_rgb, rgb_bytes);
-        cudaMemcpy(d_rgb, rgb, rgb_bytes, cudaMemcpyHostToDevice);
-    }
-
-    // World-to-camera matrix
-    Eigen::Matrix4f pose_inv = pose.inverse();
-    Eigen::Matrix3f R_wc = pose_inv.block<3,3>(0,0);
-    Eigen::Vector3f t_wc = pose_inv.block<3,1>(0,3);
-
-    float3 origin;
-    origin.x = params_.origin.x();
-    origin.y = params_.origin.y();
-    origin.z = params_.origin.z();
-
-    int RES = params_.resolution;
-    dim3 block(8, 8, 8);
-    dim3 grid(
-        (RES + block.x - 1) / block.x,
-        (RES + block.y - 1) / block.y,
-        (RES + block.z - 1) / block.z
-    );
-
-    integrationKernel<<<grid, block>>>(
-        reinterpret_cast<VoxelGPU*>(d_voxels_),
-        RES,
-        params_.voxel_size,
-        origin,
-        params_.truncation,
-        params_.max_weight,
-        d_depth, d_rgb,
-        width, height,
-        fx, fy, cx, cy,
-        R_wc(0,0), R_wc(0,1), R_wc(0,2),
-        R_wc(1,0), R_wc(1,1), R_wc(1,2),
-        R_wc(2,0), R_wc(2,1), R_wc(2,2),
+    integrationKernel_PixelParallel<<<grid, block>>>(
+        (VoxelGPU*)d_voxels_, params_.resolution, params_.voxel_size, origin, params_.truncation, params_.max_weight,
+        d_depth_, d_rgb_, width, height, fx, fy, cx, cy,
+        R_cw(0,0), R_cw(0,1), R_cw(0,2), R_cw(1,0), R_cw(1,1), R_cw(1,2), R_cw(2,0), R_cw(2,1), R_cw(2,2),
+        t_cw.x(), t_cw.y(), t_cw.z(),
+        R_wc(0,0), R_wc(0,1), R_wc(0,2), R_wc(1,0), R_wc(1,1), R_wc(1,2), R_wc(2,0), R_wc(2,1), R_wc(2,2),
         t_wc.x(), t_wc.y(), t_wc.z()
     );
-
     cudaDeviceSynchronize();
+}
 
-    cudaFree(d_depth);
-    if (d_rgb) cudaFree(d_rgb);
+__device__ float3 computeNormalGPU(void* voxels_void, int resolution, int x, int y, int z) {
+    struct VoxelRaw { float tsdf, weight, r, g, b, p[3]; };
+    VoxelRaw* voxels = (VoxelRaw*)voxels_void;
 
-    // Sync back to CPU (needed for marching cubes on CPU)
-    syncFromGPU();
+    auto get_tsdf = [&](int xi, int yi, int zi) {
+        if (xi < 0 || xi >= resolution || yi < 0 || yi >= resolution || zi < 0 || zi >= resolution) return 1.0f;
+        VoxelRaw& v = voxels[zi * resolution * resolution + yi * resolution + xi];
+        return (v.weight <= 0.001f) ? 1.0f : (v.tsdf / v.weight);
+    };
+
+    float3 n;
+    n.x = get_tsdf(x + 1, y, z) - get_tsdf(x - 1, y, z);
+    n.y = get_tsdf(x, y + 1, z) - get_tsdf(x, y - 1, z);
+    n.z = get_tsdf(x, y, z + 1) - get_tsdf(x, y, z - 1);
+
+    float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+    if (len > 1e-6f) {
+        n.x /= len; n.y /= len; n.z /= len;
+    } else {
+        n = make_float3(0, 0, -1);
+    }
+    return n;
+}
+
+__global__ void raycastKernel(
+    void* voxels_void, int resolution, float voxel_size, float3 origin,
+    float fx, float fy, float cx, float cy,
+    float r00, float r01, float r02, float tx,
+    float r10, float r11, float r12, float ty,
+    float r20, float r21, float r22, float tz,
+    int width, int height,
+    float3* out_v, float3* out_n)
+{
+    int px = blockIdx.x * blockDim.x + threadIdx.x;
+    int py = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (px >= width || py >= height) return;
+
+    struct VoxelRaw { float tsdf, weight, r, g, b, p[3]; };
+    VoxelRaw* voxels = (VoxelRaw*)voxels_void;
+
+    auto get_tsdf = [&](int xi, int yi, int zi) {
+        VoxelRaw& v = voxels[zi * resolution * resolution + yi * resolution + xi];
+        return (v.weight <= 0.001f) ? 1.0f : (v.tsdf / v.weight);
+    };
+
+    // Ray in camera space
+    float3 ray_c = make_float3((px - cx) / fx, (py - cy) / fy, 1.0f);
+    float rlen = sqrtf(ray_c.x*ray_c.x + ray_c.y*ray_c.y + 1.0f);
+    ray_c.x /= rlen; ray_c.y /= rlen; ray_c.z /= rlen;
+
+    // Ray in world space
+    float3 ray_w;
+    ray_w.x = r00 * ray_c.x + r01 * ray_c.y + r02 * ray_c.z;
+    ray_w.y = r10 * ray_c.x + r11 * ray_c.y + r12 * ray_c.z;
+    ray_w.z = r20 * ray_c.x + r21 * ray_c.y + r22 * ray_c.z;
+
+    float3 pos_w = make_float3(tx, ty, tz);
+    float t = 0.4f; // min depth
+    float prev_val = 1.0f;
+
+    for (int i = 0; i < 400; ++i) { // max steps
+        float3 p = make_float3(pos_w.x + ray_w.x * t, pos_w.y + ray_w.y * t, pos_w.z + ray_w.z * t);
+        int vx = (int)((p.x - origin.x) / voxel_size);
+        int vy = (int)((p.y - origin.y) / voxel_size);
+        int vz = (int)((p.z - origin.z) / voxel_size);
+
+        if (vx < 0 || vx >= resolution || vy < 0 || vy >= resolution || vz < 0 || vz >= resolution) {
+            t += voxel_size;
+            continue;
+        }
+
+        float val = get_tsdf(vx, vy, vz);
+        if (prev_val > 0 && val < 0) {
+            // Surface found
+            float t_fine = t - voxel_size * (val / (val - prev_val));
+            float3 pf = make_float3(pos_w.x + ray_w.x * t_fine, pos_w.y + ray_w.y * t_fine, pos_w.z + ray_w.z * t_fine);
+            
+            // Transform back to camera space for the output vertex map
+            // cam = R^T (world - t)
+            float3 pc;
+            pc.x = r00 * (pf.x - tx) + r10 * (pf.y - ty) + r20 * (pf.z - tz);
+            pc.y = r01 * (pf.x - tx) + r11 * (pf.y - ty) + r21 * (pf.z - tz);
+            pc.z = r02 * (pf.x - tx) + r12 * (pf.y - ty) + r22 * (pf.z - tz);
+            
+            out_v[py * width + px] = pc;
+            
+            // Compute normal in world space then rotate to camera space
+            float3 n_w = computeNormalGPU(voxels_void, resolution, vx, vy, vz);
+            float3 n_c;
+            n_c.x = r00 * n_w.x + r10 * n_w.y + r20 * n_w.z;
+            n_c.y = r01 * n_w.x + r11 * n_w.y + r21 * n_w.z;
+            n_c.z = r02 * n_w.x + r12 * n_w.y + r22 * n_w.z;
+            out_n[py * width + px] = n_c;
+            return;
+        }
+        prev_val = val;
+        t += fmaxf(voxel_size, val * 0.1f); // skipping
+        if (t > 5.0f) break;
+    }
+    out_v[py * width + px] = make_float3(0,0,0);
+    out_n[py * width + px] = make_float3(0,0,0);
+}
+
+void TSDFVolume::raycastGPU(const Eigen::Matrix4f& pose,
+                             float fx, float fy, float cx, float cy,
+                             int width, int height,
+                             float3* d_vertices, float3* d_normals)
+{
+    if (!gpu_valid_) return;
+
+    Eigen::Matrix3f R = pose.block<3,3>(0,0);
+    Eigen::Vector3f t = pose.block<3,1>(0,3);
+
+    float3 f_origin = {params_.origin.x(), params_.origin.y(), params_.origin.z()};
+    dim3 block(16, 16);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+
+    raycastKernel<<<grid, block>>>(
+        d_voxels_, params_.resolution, params_.voxel_size, f_origin,
+        fx, fy, cx, cy,
+        R(0,0), R(0,1), R(0,2), t.x(),
+        R(1,0), R(1,1), R(1,2), t.y(),
+        R(2,0), R(2,1), R(2,2), t.z(),
+        width, height, d_vertices, d_normals
+    );
+    cudaDeviceSynchronize();
 }
 
 } // namespace tsdf

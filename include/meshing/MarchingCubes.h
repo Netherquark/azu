@@ -11,15 +11,21 @@ using ProgressCallback = std::function<void(float)>; // 0..1
 
 class MarchingCubes {
 public:
-    // Extract mesh from TSDF volume
-    // If progress_cb is set, called with fraction 0..1 during extraction
-    static MeshData extract(const tsdf::TSDFVolume& volume,
-                            ProgressCallback        progress_cb = nullptr);
+    // GPU extraction path
+    static MeshData extractGPU(const tsdf::TSDFVolume& volume);
 
-    // Marching cubes edge table (256 entries)
-    static const int edge_table[256];
-    // Triangle table (256 x 16 entries)
-    static const int tri_table[256][16];
+#ifdef CUDA_ENABLED
+private:
+    // Persistent GPU buffers
+    static uint32_t* d_voxel_tri_counts_;
+    static uint32_t* d_voxel_offsets_;
+    static float3*   d_mesh_vertices_;
+    static float3*   d_mesh_normals_;
+    static uint8_t*  d_mesh_colors_;
+    
+    static void initGPU(int resolution);
+    static void freeGPU();
+#endif
 
 private:
     static Eigen::Vector3f interpolateEdge(
