@@ -31,7 +31,7 @@ ICPResult ICPTracker::track(const sensor::FramePyramid& live,
 
     // Coarse to fine: level 2 → 1 → 0
     for (int level = sensor::FramePyramid::LEVELS - 1; level >= 0; --level) {
-        result = trackLevel(live.levels[level], model, result.pose, level,
+        result = trackLevel(live.levels[level], model, result.pose, prev_pose, level,
                             params_.max_iterations[level]);
     }
 
@@ -42,6 +42,7 @@ ICPResult ICPTracker::track(const sensor::FramePyramid& live,
 ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
                                  const ModelFrame&        model,
                                  const Eigen::Matrix4f&   pose_estimate,
+                                 const Eigen::Matrix4f&   ref_pose,
                                  int                      level,
                                  int                      max_iter)
 {
@@ -54,7 +55,7 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
         float residual    = 0.0f;
         int   inlier_count = 0;
 
-        if (!buildLinearSystem(live_level, model, result.pose, A, b, residual, inlier_count))
+        if (!buildLinearSystem(live_level, model, result.pose, ref_pose, A, b, residual, inlier_count))
             break;
 
         if (inlier_count < 10) break;
@@ -101,6 +102,7 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
 bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
                                    const ModelFrame&        model,
                                    const Eigen::Matrix4f&   pose,
+                                   const Eigen::Matrix4f&   ref_pose,
                                    Eigen::Matrix<float,6,6>& A,
                                    Eigen::Matrix<float,6,1>& b,
                                    float& residual,
@@ -121,12 +123,18 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
 
     const float angle_thresh_cos = std::cos(params_.angle_threshold * M_PI / 180.0f);
 
-    // Camera-to-world rotation and translation from pose
+    // Camera-to-world rotation and translation from current estimated pose
     const Eigen::Matrix3f R_cw = pose.block<3,3>(0,0);
     const Eigen::Vector3f t_cw = pose.block<3,1>(0,3);
-    // World-to-camera
-    const Eigen::Matrix3f R_wc = R_cw.transpose();
-    const Eigen::Vector3f t_wc = -R_wc * t_cw;
+
+    // World-to-camera for the REFERENCE pose (where the model frame was raycasted)
+    const Eigen::Matrix4f ref_inv = ref_pose.inverse();
+    const Eigen::Matrix3f R_rc = ref_inv.block<3,3>(0,0);
+    const Eigen::Vector3f t_rc = ref_inv.block<3,1>(0,3);
+
+    // Combined relative transform: ref_cam <- world <- live_cam
+    const Eigen::Matrix3f R_rel = R_rc * R_cw;
+    const Eigen::Vector3f t_rel = R_rc * t_cw + t_rc;
 
     // Thread-local accumulators
     struct LocalAcc {
@@ -139,7 +147,11 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
                      residual(0.0f), count(0) {}
     };
 
-    const int num_threads = 1;
+    // Fix: Use actual available threads instead of hardcoded 1
+    int num_threads = 1;
+    #ifdef _OPENMP
+    num_threads = omp_get_max_threads();
+    #endif
     std::vector<LocalAcc> local(num_threads);
 
     #pragma omp parallel for schedule(dynamic, 8) num_threads(num_threads)
@@ -153,20 +165,19 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
         for (int x = 1; x < W - 1; ++x) {
             int idx = y * W + x;
 
-            // Skip invalid live points
-            if (live.depth_meters[idx] <= 0.0f) continue;
-
+            // -----------------------------------------------------------------------
+            // Fix: Transform live vertex at current estimate to reference camera
+            // -----------------------------------------------------------------------
             const Eigen::Vector3f& live_v = live.vertices[idx];
             if (live_v.norm() < 1e-6f) continue;
 
-            // Transform live vertex to world space
-            Eigen::Vector3f live_v_world = R_cw * live_v + t_cw;
+            // Map live_v (current cam space) to ref_cam space
+            Eigen::Vector3f v_ref = R_rel * live_v + t_rel;
+            
+            if (v_ref.z() <= 0.001f) continue;
 
-            // Project into model image coords (model is in world space, camera at identity)
-            // For simplicity: project live_v_world back into camera space = live_v (since model frame is raycasted from same camera)
-            // More precisely: find corresponding model point by projecting live vertex into model frame
-            float model_x = fx * live_v[0] / live_v[2] + cx;
-            float model_y = fy * live_v[1] / live_v[2] + cy;
+            float model_x = fx * v_ref.x() / v_ref.z() + cx;
+            float model_y = fy * v_ref.y() / v_ref.z() + cy;
 
             int mx = static_cast<int>(std::round(model_x));
             int my = static_cast<int>(std::round(model_y));
@@ -179,25 +190,38 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
             const Eigen::Vector3f& model_n = model.normals[midx];
             if (model_v.norm() < 1e-6f || model_n.norm() < 1e-6f) continue;
 
-            // Distance check
-            float dist = (live_v - model_v).norm();
+            // Correspondence check (Distance)
+            // Fix: Both must be in the same space for a valid distance check
+            float dist = (v_ref - model_v).norm();
             if (dist > params_.dist_threshold) continue;
 
             // Normal angle check
             const Eigen::Vector3f& live_n = live.normals[idx];
             if (live_n.norm() < 1e-6f) continue;
-            float dot = std::abs(live_n.dot(model_n));
+            
+            // Map live normal to reference space
+            Eigen::Vector3f live_n_ref = R_rel * live_n;
+            float dot = std::abs(live_n_ref.dot(model_n));
             if (dot < angle_thresh_cos) continue;
 
-            // Point-to-plane error: n^T * (live - model)
-            float err = model_n.dot(live_v - model_v);
+            // Point-to-plane error: n^T * (live_in_ref - model)
+            float err = model_n.dot(v_ref - model_v);
 
             // Jacobian for point-to-plane ICP
-            // J = [n; cross(live_v, n)]
-            Eigen::Vector3f cross = live_v.cross(model_n);
+            // We use the live vertex in CURRENT camera space for the Jacobian
+            // J = [model_n_in_live; cross(live_v, model_n_in_live)]
+            // But usually we work in current camera space.
+            // Let's transform everything to current camera space: 
+            // model_v_in_live = R_rel^T * (model_v - t_rel)
+            // model_n_in_live = R_rel^T * model_n
+            
+            Eigen::Vector3f model_n_live = R_rel.transpose() * model_n;
+            Eigen::Vector3f model_v_live = R_rel.transpose() * (model_v - t_rel);
+
+            Eigen::Vector3f cross = live_v.cross(model_n_live);
             Eigen::Matrix<float,6,1> J;
-            J(0) = model_n(0); J(1) = model_n(1); J(2) = model_n(2);
-            J(3) = cross(0);   J(4) = cross(1);   J(5) = cross(2);
+            J(0) = model_n_live(0); J(1) = model_n_live(1); J(2) = model_n_live(2);
+            J(3) = cross(0);        J(4) = cross(1);        J(5) = cross(2);
 
             acc.A += J * J.transpose();
             acc.b -= J * err;

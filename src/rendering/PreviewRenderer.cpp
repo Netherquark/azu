@@ -37,12 +37,13 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 uniform mat4 uMVP;
 uniform mat4 uModelView;
+uniform mat3 uNormalMatrix;
 out vec3 vNormal;
 out vec3 vFragPos;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vFragPos = vec3(uModelView * vec4(aPos, 1.0));
-    vNormal  = normalize(mat3(transpose(inverse(uModelView))) * aNormal);
+    vNormal  = normalize(uNormalMatrix * aNormal);
 }
 )glsl";
 
@@ -246,6 +247,10 @@ void PreviewRenderer::renderMesh() {
     mesh_shader_.use();
     mesh_shader_.setUniformMat4("uMVP", MVP.data());
     mesh_shader_.setUniformMat4("uModelView", V.data());
+
+    // Normal matrix: transpose(inverse(MV))
+    Eigen::Matrix3f normalMatrix = V.block<3,3>(0,0).inverse().transpose();
+    mesh_shader_.setUniformMat3("uNormalMatrix", normalMatrix.data());
 
     glBindVertexArray(mesh_vao_);
     glDrawElements(GL_TRIANGLES, mesh_index_count_, GL_UNSIGNED_INT, nullptr);

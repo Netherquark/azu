@@ -5,9 +5,12 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <functional>
-#include <cstdint>
 #include <array>
+#include <vector>
+#include <memory>
+#include "utils/RingBuffer.h"
+#include <vector>
+#include <memory>
 
 namespace kfusion {
 namespace sensor {
@@ -31,16 +34,21 @@ inline float rawDepthToMeters(uint16_t raw) {
 }
 
 struct RawFrame {
-    std::array<uint16_t, DEPTH_WIDTH * DEPTH_HEIGHT> depth;
-    std::array<uint8_t,  RGB_WIDTH * RGB_HEIGHT * 3> rgb;
+    std::vector<uint16_t> depth;
+    std::vector<uint8_t>  rgb;
     double timestamp_depth = 0.0;
     double timestamp_rgb   = 0.0;
     bool   depth_valid     = false;
     bool   rgb_valid       = false;
     uint64_t frame_id      = 0;
+
+    RawFrame() {
+        depth.resize(DEPTH_WIDTH * DEPTH_HEIGHT);
+        rgb.resize(RGB_WIDTH * RGB_HEIGHT * 3);
+    }
 };
 
-using FrameCallback = std::function<void(const RawFrame&)>;
+using FrameCallback = std::function<void(std::shared_ptr<RawFrame>)>;
 
 class KinectSensor {
 public:
@@ -60,25 +68,25 @@ public:
     // Register callback invoked on UI/pipeline thread (posted from capture thread)
     void setFrameCallback(FrameCallback cb) { frame_callback_ = std::move(cb); }
 
-    // Returns copy of latest synchronized frame (thread-safe)
-    bool getLatestFrame(RawFrame& out) const;
+    // Returns latest synchronized frame (zero-copy)
+    std::shared_ptr<RawFrame> getLatestFrame();
 
 private:
     // libfreenect state
     freenect_context* ctx_    = nullptr;
     freenect_device*  device_ = nullptr;
 
-    // Double buffering: back (being written by callbacks) + front (ready)
-    RawFrame back_buffer_;
-    mutable RawFrame front_buffer_;
-    mutable std::mutex frame_mutex_;
-    std::condition_variable frame_cv_;
-    mutable bool new_frame_ready_ = false;
+    // Lock-free pipeline state
+    static constexpr size_t POOL_SIZE = 8;
+    std::vector<std::shared_ptr<RawFrame>> pool_;
+    utils::RingBuffer<std::shared_ptr<RawFrame>> ready_queue_;
+    utils::RingBuffer<std::shared_ptr<RawFrame>> free_queue_;
+    
+    // Indices currently assigned to libfreenect
+    std::atomic<int> current_depth_idx_{-1};
+    std::atomic<int> current_rgb_idx_{-1};
 
-    // Synchronization state between depth and rgb callbacks
-    std::mutex sync_mutex_;
-    RawFrame   pending_frame_;
-    uint64_t   frame_counter_ = 0;
+    uint64_t frame_counter_ = 0;
 
     std::atomic<bool> running_{false};
     std::thread       capture_thread_;

@@ -358,41 +358,81 @@ Eigen::Vector3f MarchingCubes::computeNormal(
     return (len > 1e-6f) ? (n / len) : Eigen::Vector3f(0,0,1);
 }
 
+#include <unordered_map>
+
+// Helper to hash Eigen vectors for vertex unification
+struct VectorHasher {
+    size_t operator()(const Eigen::Vector3f& v) const {
+        size_t h1 = std::hash<float>{}(v.x());
+        size_t h2 = std::hash<float>{}(v.y());
+        size_t h3 = std::hash<float>{}(v.z());
+        return h1 ^ (h2 << 1) ^ (h3 << 2);
+    }
+};
+
 MeshData MarchingCubes::extract(const tsdf::TSDFVolume& volume,
                                  ProgressCallback        progress_cb)
 {
-    const auto& p  = volume.params();
+    const auto& p   = volume.params();
     const int   RES = p.resolution;
+    const float vs  = p.voxel_size;
 
     MeshData mesh;
-    mesh.reserve(RES * RES * 4); // rough estimate
+    mesh.reserve(RES * RES * 2); // conservative initial reserve
 
+    // For vertex unification and smooth normals
+    // We'll use a thread-local approach to avoid contention during extraction, 
+    // then merge at the end. Or just use face vertices for now but indexed.
+    // Actually, to truly satisfy "Smooth Shading", we MUST use vertex normals.
+    
+    // Structure to hold unique vertex data
+    struct Vertex {
+        Eigen::Vector3f pos;
+        Eigen::Vector3f norm;
+        uint8_t color[3];
+
+        bool operator==(const Vertex& other) const {
+            return pos.isApprox(other.pos, 1e-4f);
+        }
+    };
+
+    struct VertexHasher {
+        size_t operator()(const Vertex& v) const {
+            return std::hash<float>{}(v.pos.x()) ^ 
+                   (std::hash<float>{}(v.pos.y()) << 1) ^ 
+                   (std::hash<float>{}(v.pos.z()) << 2);
+        }
+    };
+
+    // Parallelize over slices
+    // To keep it thread-safe without massive locking, we collect local meshes per slice 
+    // and merge them. 
+    std::vector<MeshData> slice_meshes(RES - 1);
+
+    #pragma omp parallel for schedule(dynamic, 4)
     for (int z = 0; z < RES - 1; ++z) {
-        if (progress_cb) progress_cb(static_cast<float>(z) / (RES - 2));
+        if (progress_cb && (z % 10 == 0)) 
+            progress_cb(static_cast<float>(z) / (RES - 2));
 
+        auto& local_mesh = slice_meshes[z];
+        
         for (int y = 0; y < RES - 1; ++y) {
             for (int x = 0; x < RES - 1; ++x) {
-                // Get TSDF values at 8 corners
                 float corner_vals[8];
                 for (int c = 0; c < 8; ++c) {
                     int cx = x + CORNER_OFFSETS[c][0];
                     int cy = y + CORNER_OFFSETS[c][1];
                     int cz = z + CORNER_OFFSETS[c][2];
                     const tsdf::Voxel& vox = volume.voxelAt(cx, cy, cz);
-                    if (vox.weight <= 0.0f)
-                        corner_vals[c] = 1.0f; // treat unobserved as empty
-                    else
-                        corner_vals[c] = vox.tsdf;
+                    corner_vals[c] = (vox.weight <= 0.0f) ? 1.0f : vox.tsdf;
                 }
 
-                // Compute cube index
                 int cube_idx = 0;
                 for (int c = 0; c < 8; ++c)
                     if (corner_vals[c] < 0.0f) cube_idx |= (1 << c);
 
                 if (edge_table[cube_idx] == 0) continue;
 
-                // World positions of 8 corners
                 Eigen::Vector3f corner_pos[8];
                 for (int c = 0; c < 8; ++c) {
                     corner_pos[c] = volume.voxelToWorld(
@@ -401,8 +441,8 @@ MeshData MarchingCubes::extract(const tsdf::TSDFVolume& volume,
                         z + CORNER_OFFSETS[c][2]);
                 }
 
-                // Interpolate edge vertices
                 Eigen::Vector3f edge_verts[12];
+                Eigen::Vector3f edge_norms[12];
                 for (int e = 0; e < 12; ++e) {
                     if (edge_table[cube_idx] & (1 << e)) {
                         int c0 = EDGE_CORNERS[e][0];
@@ -410,38 +450,49 @@ MeshData MarchingCubes::extract(const tsdf::TSDFVolume& volume,
                         edge_verts[e] = interpolateEdge(
                             corner_pos[c0], corner_vals[c0],
                             corner_pos[c1], corner_vals[c1]);
+                        
+                        // Fix: Smooth Normals via Central Differences of interpolated TSDF
+                        // For efficiency, we can just use the corner normals and interpolate them
+                        Eigen::Vector3f n0 = computeNormal(volume, 
+                            x + CORNER_OFFSETS[c0][0], 
+                            y + CORNER_OFFSETS[c0][1], 
+                            z + CORNER_OFFSETS[c0][2]);
+                        Eigen::Vector3f n1 = computeNormal(volume, 
+                            x + CORNER_OFFSETS[c1][0], 
+                            y + CORNER_OFFSETS[c1][1], 
+                            z + CORNER_OFFSETS[c1][2]);
+                        
+                        float t = (std::abs(corner_vals[c0]) < 1e-6f) ? 0.0f : 
+                                  (corner_vals[c0] / (corner_vals[c0] - corner_vals[c1]));
+                        edge_norms[e] = (n0 + t * (n1 - n0)).normalized();
                     }
                 }
 
-                // Emit triangles
+                const tsdf::Voxel& vox = volume.voxelAt(x, y, z);
                 for (int t = 0; tri_table[cube_idx][t] != -1; t += 3) {
-                    int e0 = tri_table[cube_idx][t];
-                    int e1 = tri_table[cube_idx][t+1];
-                    int e2 = tri_table[cube_idx][t+2];
-
-                    const Eigen::Vector3f& v0 = edge_verts[e0];
-                    const Eigen::Vector3f& v1 = edge_verts[e1];
-                    const Eigen::Vector3f& v2 = edge_verts[e2];
-
-                    // Compute face normal
-                    Eigen::Vector3f fn = (v1 - v0).cross(v2 - v0);
-                    float flen = fn.norm();
-                    Eigen::Vector3f face_n = (flen > 1e-6f) ? (fn / flen) : Eigen::Vector3f(0,1,0);
-
-                    // Get color from nearest voxel (simple)
-                    const tsdf::Voxel& vox = volume.voxelAt(x, y, z);
-
-                    Triangle tri;
-                    tri.v[0] = v0; tri.v[1] = v1; tri.v[2] = v2;
-                    tri.n[0] = tri.n[1] = tri.n[2] = face_n;
                     for (int i = 0; i < 3; ++i) {
-                        tri.c[i][0] = vox.r;
-                        tri.c[i][1] = vox.g;
-                        tri.c[i][2] = vox.b;
+                        int e = tri_table[cube_idx][t + i];
+                        uint32_t vidx = static_cast<uint32_t>(local_mesh.positions.size());
+                        local_mesh.positions.push_back(edge_verts[e]);
+                        local_mesh.normals.push_back(edge_norms[e]);
+                        local_mesh.colors.push_back(vox.r);
+                        local_mesh.colors.push_back(vox.g);
+                        local_mesh.colors.push_back(vox.b);
+                        local_mesh.indices.push_back(vidx);
                     }
-                    mesh.addTriangle(tri);
                 }
             }
+        }
+    }
+
+    // Merge slice meshes into final mesh
+    for (const auto& sm : slice_meshes) {
+        uint32_t offset = static_cast<uint32_t>(mesh.positions.size());
+        mesh.positions.insert(mesh.positions.end(), sm.positions.begin(), sm.positions.end());
+        mesh.normals.insert(mesh.normals.end(), sm.normals.begin(), sm.normals.end());
+        mesh.colors.insert(mesh.colors.end(), sm.colors.begin(), sm.colors.end());
+        for (auto idx : sm.indices) {
+            mesh.indices.push_back(idx + offset);
         }
     }
 

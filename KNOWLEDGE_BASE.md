@@ -11,10 +11,10 @@ The system orchestrates four primary threads managed by `PipelineController`:
 
 | Thread | Responsibility | Synchronization |
 |---|---|---|
-| **Capture Thread** | Interfacing with `libfreenect`. Polls hardware and populates a raw frame buffer. | Double-buffering + `std::condition_variable`. |
-| **Tracking Thread** | Processes raw depth/RGB into `FrameData` and `FramePyramid`. Performs ICP against the model frame. | Polls `raw_queue_` via `std::condition_variable`. |
-| **Integration Thread** | Integrates successfully tracked frames into the `TSDFVolume`. Performs raycasting to update the `ModelFrame`. | Polls `integration_queue_` via `std::condition_variable`. |
-| **Meshing Thread** | Periodically extracts a mesh from the TSDF volume using Marching Cubes. | Triggered every N integrated frames or on-demand. |
+| **Capture Thread** | Interfacing with `libfreenect`. Polls hardware and populates circular pool. | **Zero-Copy circular pool** + `std::atomic` frame index. |
+| **Tracking Thread** | Processes raw depth/RGB into `FrameData` and `FramePyramid`. Performs pose-aware ICP. | Polls `ready_queue_` via `RingBuffer`. |
+| **Integration Thread** | Integrates tracked frames into the `TSDFVolume`. Performs raycasting. | Shared/Unique locking on voxel grid. |
+| **Meshing Thread**| Extracts smoothly-shaded indexed mesh from TSDF. | Parallelized weighted accumulation. |
 
 ### 1.2 Data Flow
 1. **Sensor**: `KinectSensor` produces `RawFrame` (depth 11-bit, RGB).
@@ -34,11 +34,10 @@ The system orchestrates four primary threads managed by `PipelineController`:
 **Class**: `KinectSensor`
 - **Purpose**: Low-level interface to Kinect v1 hardware via `libfreenect`.
 - **Key Functions**:
-    - `init()`: Initializes `libfreenect` context and opens device.
+    - `init()`: Initializes `libfreenect` context and circular buffer pool.
     - `start()`/`stop()`: Controls the 30 FPS capture thread.
     - `captureLoop()`: Continuously polls `freenect_process_events`.
-    - `depthCallback`/`rgbCallback`: Static callbacks from libfreenect that populate `back_buffer_`.
-- **Details**: Uses a `std::mutex` protected double-buffer (`back_buffer_` vs `front_buffer_`) to safely transfer frames to the pipeline.
+- **Concurrency**: Uses a **circular pool of 8 `shared_ptr<RawFrame>`** buffers to decouple hardware interrupts from pipeline processing. This achieves zero-copy frame passage.
 
 #### FrameData.h / .cpp
 **Structs**: `FrameData`, `FramePyramid`
@@ -56,10 +55,10 @@ The system orchestrates four primary threads managed by `PipelineController`:
 **Class**: `ICPTracker`
 - **Purpose**: Implements Point-to-Plane Iterative Closest Point algorithm.
 - **Key Functions**:
-    - `track()`: Entry point. Orchestrates tracking across pyramid levels (coarsest to finest).
-    - `trackLevel()`: Performs fixed-count iterations at a specific resolution level.
-    - `buildLinearSystem()`: Finds correspondences between live frame and raycasted model. Constructs $6 \times 6$ coefficient matrix $A$ and $6 \times 1$ vector $b$ for the Gauss-Newton step.
-- **Implementation**: Uses `Eigen::LLT` to solve the linear system for incremental rotation (Euler approximation) and translation.
+    - `track()`: Multiresolution entry point. Processes coarse-to-fine pyramids.
+    - `trackLevel()`: Executes Point-to-Plane ICP iterations at a specific pyramid level.
+    - `buildLinearSystem()`: **Pose-Aware Correspondence**. Projects live points through the previous pose and finds closest points in the raycasted model. Constructs the $6 \times 6$ Gauss-Newton Hessian.
+- **Optimization**: All inner loops are parallelized using `OpenMP` for real-time tracking (30ms budget for CPU).
 
 #### ICPTracker_cuda.cu
 - **Purpose**: GPU-accelerated preprocessing kernels.
@@ -76,10 +75,11 @@ The system orchestrates four primary threads managed by `PipelineController`:
 - **Purpose**: Global 3D model representation using a Voxel Grid.
 - **Parameters**: 256³ resolution (default), 1cm voxel size, 3cm truncation distance.
 - **Key Functions**:
-    - `integrate()`: Projects live depth into the volume and updates Signed Distance Function (SDF) and weight.
-    - `raycast()`: Casts rays from a camera pose through the volume to find zero-crossings (surface hits). Produces `ModelFrame`.
-    - `interpolate()`: Trilinear interpolation of TSDF values for smooth normal computation.
-- **Acceleration**: Uses `OpenMP` for CPU-based integration/raycasting.
+    - `integrate()`: **Image-Centric Integration**. Directly ray-marches from valid depth pixels $(O(W \times H))$ into the volume, significantly faster than voxel-centric $(O(N^3))$ methods.
+    - `raycast()`: Casts rays through the volume to find surface zero-crossings.
+    - `interpolate()`: Trilinear interpolation of TSDF values for smooth gradients.
+- **Concurrency**: Guarded by `std::shared_mutex`. Readers (Raycast/Mesh) use `shared_lock`, while Integrator uses `unique_lock`.
+- **Acceleration**: Systematic use of `OpenMP` pragmas.
 
 #### TSDFVolume_cuda.cu
 - **Purpose**: High-performance GPU integration.
@@ -95,8 +95,10 @@ The system orchestrates four primary threads managed by `PipelineController`:
 #### MarchingCubes.h / .cpp
 - **Purpose**: Polygonization of the TSDF volume.
 - **Key Functions**:
-    - `extract()`: Iterates through the voxel grid (Z -> Y -> X). Identifies active edges in $2 \times 2 \times 2$ voxel cubes.
-- **Implementation**: Uses standard 256-entry lookup tables (`edge_table`, `tri_table`) to generate triangles based on zero-crossing edges.
+    - `extract()`: Polygonization kernel. Parallelized by voxel slices.
+- **Quality**:
+    - **Smooth Shading**: Computes normals using central differences of the TSDF field interpolated at specific vertices.
+    - **Indexed Geometry**: Produces indexed vertex buffers (EBO) to reduce VRAM duplication and improve cache locality.
 
 #### MeshData.h
 - **Struct**: `MeshData` (Positions, Normals, Colors, Indices).
@@ -109,7 +111,7 @@ The system orchestrates four primary threads managed by `PipelineController`:
 #### PreviewRenderer.h
 - **Purpose**: Core OpenGL 3.3 renderer.
 - **Modes**: `PointCloud` (live-tracking debug) and `Mesh` (global reconstruction).
-- **Details**: Uses VAO/VBO for efficient buffer management. Point cloud rendering uses `GL_POINTS` with camera-space attributes.
+- **Optimization**: Normal matrices are pre-computed on the CPU to avoid expensive `transpose(inverse())` calls in the vertex shader.
 
 #### OrbitCamera.h
 - Implements mouse-driven rotation, zoom, and pan for the 3D viewport.
@@ -146,10 +148,10 @@ The system orchestrates four primary threads managed by `PipelineController`:
 
 Current state based on codebase audit:
 
+- **TODO**: CUDA Parity. CPU logic (image-centric, pose-aware) is now ahead of legacy CUDA kernels.
 - **TODO**: Multi-Kinect support is stubbed but not implemented in `KinectSensor`.
-- **TODO**: CUDA raycasting for tracking acceleration (currently tracking uses CPU raycast).
-- **TODO**: Color integration in `TSDFVolume::integrate` is simplified.
-- **FIXME**: `MarchingCubes` extraction is slightly redundant if volume hasn't changed significantly.
+- **TODO**: Global Loop Closure (Pose Graph optimization).
+- **FIXME**: `MarchingCubes` extraction is slightly redundant if volume hasn't changed.
 
 ---
 

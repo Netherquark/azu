@@ -55,6 +55,7 @@ private:
     ICPResult trackLevel(const sensor::FrameData& live_level,
                          const ModelFrame&        model,
                          const Eigen::Matrix4f&   pose_estimate,
+                         const Eigen::Matrix4f&   ref_pose,
                          int                      level,
                          int                      max_iter);
 
@@ -62,6 +63,7 @@ private:
     bool buildLinearSystem(const sensor::FrameData& live,
                            const ModelFrame&        model,
                            const Eigen::Matrix4f&   pose,
+                           const Eigen::Matrix4f&   ref_pose,
                            Eigen::Matrix<float,6,6>& A,
                            Eigen::Matrix<float,6,1>& b,
                            float& residual,

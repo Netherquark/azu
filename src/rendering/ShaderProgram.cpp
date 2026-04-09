@@ -76,6 +76,11 @@ void ShaderProgram::setUniformMat4(const char* name, const float* data) {
     if (loc >= 0) glUniformMatrix4fv(loc, 1, GL_FALSE, data);
 }
 
+void ShaderProgram::setUniformMat3(const char* name, const float* data) {
+    int loc = glGetUniformLocation(program_id_, name);
+    if (loc >= 0) glUniformMatrix3fv(loc, 1, GL_FALSE, data);
+}
+
 void ShaderProgram::setUniformVec3(const char* name, float x, float y, float z) {
     int loc = glGetUniformLocation(program_id_, name);
     if (loc >= 0) glUniform3f(loc, x, y, z);

@@ -16,6 +16,7 @@ public:
     void disuse();
 
     void setUniformMat4(const char* name, const float* data);
+    void setUniformMat3(const char* name, const float* data);
     void setUniformVec3(const char* name, float x, float y, float z);
     void setUniformFloat(const char* name, float v);
     void setUniformInt(const char* name, int v);

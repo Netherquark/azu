@@ -5,6 +5,7 @@
 #include <vector>
 #include <cstdint>
 #include <atomic>
+#include <shared_mutex>
 
 namespace kfusion {
 namespace tsdf {
@@ -80,6 +81,7 @@ private:
     TSDFParams           params_;
     std::vector<Voxel>   voxels_;
     std::atomic<int>     integrated_frames_{0};
+    mutable std::shared_mutex mutex_;
 
     inline int idx(int x, int y, int z) const {
         return z * params_.resolution * params_.resolution
