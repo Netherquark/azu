@@ -40,27 +40,24 @@ sudo dnf install -y \
     mesa-libGLU-devel \
     libXrandr-devel \
     libXi-devel \
-    openmp \
+    libgomp \
     pkgconf-pkg-config
 ```
 
-#### Optional: CUDA Acceleration (Experimental)
+#### Optional: CUDA Acceleration
 If you have an NVIDIA GPU (RTX 30/40/50 series), install the CUDA toolkit:
 ```bash
 sudo dnf install cuda
 ```
-Ensure `/usr/local/cuda/bin` is in your `PATH` and `nvcc` is accessible.
+Ensure `/usr/local/cuda/bin` is in your `PATH`.
 
 ### 2. Cloning and Setup
 
-Clone the repository and fetch header-only dependencies (tinygltf, stb):
-
 ```bash
-git clone https://github.com/KinectFusionQt/KinectFusionQt.git
-cd KinectFusionQt
+git clone https://github.com/1vedantshinde/kinect_asset.git
+cd kinect_asset
 
-# Fetch bundled dependencies that aren't in Fedora repos
-# This downloads tinygltf and stb headers into third_party/
+# Fetch bundled dependencies (tinygltf, stb)
 bash scripts/fetch_deps.sh
 ```
 
