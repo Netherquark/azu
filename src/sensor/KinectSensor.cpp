@@ -136,9 +136,9 @@ void KinectSensor::onDepth(void* data, uint32_t timestamp) {
         depth_pending_->rgb_valid = true;
         depth_pending_->frame_id = ++frame_counter_;
 
-        if (frame_callback_) frame_callback_(depth_pending_);
-        
-        {
+        if (frame_callback_) {
+            frame_callback_(depth_pending_);
+        } else {
             std::lock_guard<std::mutex> qlk(queue_mutex_);
             ready_queue_.push(depth_pending_);
         }
@@ -168,9 +168,9 @@ void KinectSensor::onRgb(void* data, uint32_t timestamp) {
         depth_pending_->rgb_valid = true;
         depth_pending_->frame_id = ++frame_counter_;
 
-        if (frame_callback_) frame_callback_(depth_pending_);
-        
-        {
+        if (frame_callback_) {
+            frame_callback_(depth_pending_);
+        } else {
             std::lock_guard<std::mutex> qlk(queue_mutex_);
             ready_queue_.push(depth_pending_);
         }

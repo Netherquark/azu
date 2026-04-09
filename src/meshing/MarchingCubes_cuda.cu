@@ -1,6 +1,7 @@
 #ifdef CUDA_ENABLED
 
 #include "meshing/MarchingCubes.h"
+#include "tsdf/VoxelGPU.h"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <thrust/device_ptr.h>
@@ -93,14 +94,13 @@ __device__ float3 interpolateEdgeGPU(float3 p1, float v1, float3 p2, float v2) {
 
 // Compute normal via central difference on GPU
 __device__ float3 computeNormalGPU(void* voxels_void, int resolution, int x, int y, int z) {
-    struct VoxelRaw { float tsdf, weight, r, g, b, p[3]; };
-    VoxelRaw* voxels = (VoxelRaw*)voxels_void;
+    tsdf::VoxelGPU* voxels = (tsdf::VoxelGPU*)voxels_void;
     
     auto sample = [&](int xi, int yi, int zi) {
         if (xi < 0 || xi >= resolution || yi < 0 || yi >= resolution || zi < 0 || zi >= resolution)
             return 1.0f;
-        VoxelRaw& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        return (v.weight <= 0.001f) ? 1.0f : (v.tsdf / v.weight);
+        tsdf::VoxelGPU& v = voxels[zi * resolution * resolution + yi * resolution + xi];
+        return (v.weight <= 0.001f) ? 1.0f : v.tsdf;
     };
     
     float dx = sample(x+1, y, z) - sample(x-1, y, z);
@@ -119,12 +119,11 @@ __global__ void classifyVoxelKernel(
 
     if (x >= resolution - 1 || y >= resolution - 1 || z >= resolution - 1) return;
 
-    struct VoxelRaw { float tsdf, weight, r, g, b, p[3]; };
-    VoxelRaw* voxels = (VoxelRaw*)voxels_void;
+    tsdf::VoxelGPU* voxels = (tsdf::VoxelGPU*)voxels_void;
 
     auto get_tsdf = [&](int xi, int yi, int zi) {
-        VoxelRaw& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        return (v.weight <= 0.001f) ? 1.0f : (v.tsdf / v.weight);
+        tsdf::VoxelGPU& v = voxels[zi * resolution * resolution + yi * resolution + xi];
+        return (v.weight <= 0.001f) ? 1.0f : v.tsdf;
     };
 
     int cube_idx = 0;
@@ -161,23 +160,23 @@ __global__ void generateMeshKernel(
     // BOUNDS CHECK: Prevent GPU buffer overflow
     if (next_offset > max_tris) return;
 
-    struct VoxelRaw { float tsdf, weight, r, g, b, p[3]; };
-    VoxelRaw* voxels = (VoxelRaw*)voxels_void;
+    tsdf::VoxelGPU* voxels = (tsdf::VoxelGPU*)voxels_void;
 
-    auto get_tsdf = [&](int xi, int yi, int zi) {
-        VoxelRaw& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        return (v.weight <= 0.001f) ? 1.0f : (v.tsdf / v.weight);
+    auto get_voxel = [&](int xi, int yi, int zi) -> tsdf::VoxelGPU& {
+        return voxels[zi * resolution * resolution + yi * resolution + xi];
     };
 
     int cube_idx = 0;
     float corner_vals[8];
     for (int i = 0; i < 8; ++i) {
-        corner_vals[i] = get_tsdf(x + c_corner_offsets[i][0], y + c_corner_offsets[i][1], z + c_corner_offsets[i][2]);
+        tsdf::VoxelGPU& v = get_voxel(x + c_corner_offsets[i][0], y + c_corner_offsets[i][1], z + c_corner_offsets[i][2]);
+        corner_vals[i] = (v.weight <= 0.001f) ? 1.0f : v.tsdf;
         if (corner_vals[i] < 0) cube_idx |= (1 << i);
     }
 
     float3 edge_v[12];
     float3 edge_n[12];
+    uchar3 edge_c[12];
     for (int i = 0; i < 12; ++i) {
         if (c_edge_table[cube_idx] & (1 << i)) {
             int c1 = c_edge_corners[i][0];
@@ -196,10 +195,17 @@ __global__ void generateMeshKernel(
             edge_n[i] = make_float3(n1.x + t*(n2.x-n1.x), n1.y + t*(n2.y-n1.y), n1.z + t*(n2.z-n1.z));
             float len = 1.0f / sqrtf(edge_n[i].x*edge_n[i].x + edge_n[i].y*edge_n[i].y + edge_n[i].z*edge_n[i].z + 1e-9f);
             edge_n[i].x *= len; edge_n[i].y *= len; edge_n[i].z *= len;
+            
+            tsdf::VoxelGPU& v1 = get_voxel(x+c_corner_offsets[c1][0], y+c_corner_offsets[c1][1], z+c_corner_offsets[c1][2]);
+            tsdf::VoxelGPU& v2 = get_voxel(x+c_corner_offsets[c2][0], y+c_corner_offsets[c2][1], z+c_corner_offsets[c2][2]);
+            edge_c[i] = make_uchar3(
+                (uint8_t)fminf(255.0f, fmaxf(0.0f, v1.r + t * (v2.r - v1.r))),
+                (uint8_t)fminf(255.0f, fmaxf(0.0f, v1.g + t * (v2.g - v1.g))),
+                (uint8_t)fminf(255.0f, fmaxf(0.0f, v1.b + t * (v2.b - v1.b)))
+            );
         }
     }
 
-    VoxelRaw& base_v = voxels[idx];
     uint32_t out_idx_start = offset * 3;
     int v_count = 0;
     for (int i = 0; i < 16 && c_tri_table[cube_idx][i] != -1; i += 3) {
@@ -207,9 +213,9 @@ __global__ void generateMeshKernel(
             int e = c_tri_table[cube_idx][i + k];
             out_v[out_idx_start + v_count] = edge_v[e];
             out_n[out_idx_start + v_count] = edge_n[e];
-            out_c[(out_idx_start + v_count)*3+0] = (uint8_t)fminf(255.0f, base_v.r / (base_v.weight + 1e-6f));
-            out_c[(out_idx_start + v_count)*3+1] = (uint8_t)fminf(255.0f, base_v.g / (base_v.weight + 1e-6f));
-            out_c[(out_idx_start + v_count)*3+2] = (uint8_t)fminf(255.0f, base_v.b / (base_v.weight + 1e-6f));
+            out_c[(out_idx_start + v_count)*3+0] = edge_c[e].x;
+            out_c[(out_idx_start + v_count)*3+1] = edge_c[e].y;
+            out_c[(out_idx_start + v_count)*3+2] = edge_c[e].z;
             v_count++;
         }
     }

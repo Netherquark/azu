@@ -9,17 +9,7 @@
 namespace kfusion {
 namespace tsdf {
 
-// -------------------------------------------------------------------
-// Device structs
-// -------------------------------------------------------------------
-struct VoxelGPU {
-    float   tsdf;   // stores weighted TSDF sum
-    float   weight;
-    float   r_sum;  // weighted color sums
-    float   g_sum;
-    float   b_sum;
-    float   padding[3]; // align to 32 bytes for performance
-};
+#include "tsdf/VoxelGPU.h"
 
 // -------------------------------------------------------------------
 // Integration kernel: Image-Centric (Pixel Parallel)
@@ -92,15 +82,50 @@ __global__ void integrationKernel_PixelParallel(
         int lidx = vz * resolution * resolution + vy * resolution + vx;
         VoxelGPU& vox = voxels[lidx];
 
-        // Atomic integration
-        atomicAdd(&vox.tsdf, tsdf_new);
-        atomicAdd(&vox.weight, 1.0f);
+        // Atomic integration with CAS clamp
+        union TSDFPack {
+            struct { float tsdf; float weight; } fields;
+            unsigned long long int as_ull;
+        };
+
+        unsigned long long int* addr = (unsigned long long int*)&vox.tsdf;
+        unsigned long long int old_val = *addr, assumed, new_val;
+        float w_old, w_new;
+        do {
+            assumed = old_val;
+            TSDFPack pack; pack.as_ull = assumed;
+            w_old = pack.fields.weight;
+            w_new = fminf(w_old + 1.0f, max_weight);
+            float t_new = (pack.fields.tsdf * w_old + tsdf_new) / (w_new + 1e-6f);
+            
+            TSDFPack new_pack; 
+            new_pack.fields.tsdf = t_new; 
+            new_pack.fields.weight = w_new;
+            new_val = new_pack.as_ull;
+            old_val = atomicCAS(addr, assumed, new_val);
+        } while (assumed != old_val);
         
         if (rgb) {
             int pidx = py * width + px;
-            atomicAdd(&vox.r_sum, (float)rgb[pidx*3+0]);
-            atomicAdd(&vox.g_sum, (float)rgb[pidx*3+1]);
-            atomicAdd(&vox.b_sum, (float)rgb[pidx*3+2]);
+            float r_meas = (float)rgb[pidx*3+0];
+            float g_meas = (float)rgb[pidx*3+1];
+            float b_meas = (float)rgb[pidx*3+2];
+            
+            auto atomicUpdateColor = [&](float* c_addr, float m) {
+                int* c_addr_i = (int*)c_addr;
+                int c_old_val = *c_addr_i, c_assumed, c_new_val;
+                do {
+                    c_assumed = c_old_val;
+                    float c_old = __int_as_float(c_assumed);
+                    float c_new = (c_old * w_old + m) / (w_new + 1e-6f);
+                    c_new_val = __float_as_int(c_new);
+                    c_old_val = atomicCAS(c_addr_i, c_assumed, c_new_val);
+                } while (c_assumed != c_old_val);
+            };
+            
+            atomicUpdateColor(&vox.r, r_meas);
+            atomicUpdateColor(&vox.g, g_meas);
+            atomicUpdateColor(&vox.b, b_meas);
         }
     }
 }
@@ -130,11 +155,11 @@ void TSDFVolume::syncToGPU() {
     size_t n = voxels_.size();
     std::vector<VoxelGPU> gpu_data(n);
     for (size_t i = 0; i < n; ++i) {
-        gpu_data[i].tsdf   = voxels_[i].tsdf * voxels_[i].weight;
+        gpu_data[i].tsdf   = voxels_[i].tsdf;
         gpu_data[i].weight = voxels_[i].weight;
-        gpu_data[i].r_sum  = voxels_[i].r * voxels_[i].weight;
-        gpu_data[i].g_sum  = voxels_[i].g * voxels_[i].weight;
-        gpu_data[i].b_sum  = voxels_[i].b * voxels_[i].weight;
+        gpu_data[i].r      = voxels_[i].r;
+        gpu_data[i].g      = voxels_[i].g;
+        gpu_data[i].b      = voxels_[i].b;
     }
     cudaMemcpy(d_voxels_, gpu_data.data(), n * sizeof(VoxelGPU), cudaMemcpyHostToDevice);
 }
@@ -146,12 +171,12 @@ void TSDFVolume::syncFromGPU() {
     cudaMemcpy(gpu_data.data(), d_voxels_, n * sizeof(VoxelGPU), cudaMemcpyDeviceToHost);
     for (size_t i = 0; i < n; ++i) {
         float w = gpu_data[i].weight;
-        voxels_[i].weight = fminf(w, params_.max_weight);
+        voxels_[i].weight = w;
         if (w > 0.001f) {
-            voxels_[i].tsdf = gpu_data[i].tsdf / w;
-            voxels_[i].r = (uint8_t)fminf(255.0f, gpu_data[i].r_sum / w);
-            voxels_[i].g = (uint8_t)fminf(255.0f, gpu_data[i].g_sum / w);
-            voxels_[i].b = (uint8_t)fminf(255.0f, gpu_data[i].b_sum / w);
+            voxels_[i].tsdf = gpu_data[i].tsdf;
+            voxels_[i].r = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].r));
+            voxels_[i].g = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].g));
+            voxels_[i].b = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].b));
         } else {
             voxels_[i].tsdf = 1.0f;
         }
@@ -191,13 +216,12 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
 }
 
 __device__ float3 computeNormalGPU(void* voxels_void, int resolution, int x, int y, int z) {
-    struct VoxelRaw { float tsdf, weight, r, g, b, p[3]; };
-    VoxelRaw* voxels = (VoxelRaw*)voxels_void;
+    VoxelGPU* voxels = (VoxelGPU*)voxels_void;
 
     auto get_tsdf = [&](int xi, int yi, int zi) {
         if (xi < 0 || xi >= resolution || yi < 0 || yi >= resolution || zi < 0 || zi >= resolution) return 1.0f;
-        VoxelRaw& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        return (v.weight <= 0.001f) ? 1.0f : (v.tsdf / v.weight);
+        VoxelGPU& v = voxels[zi * resolution * resolution + yi * resolution + xi];
+        return (v.weight <= 0.001f) ? 1.0f : v.tsdf;
     };
 
     float3 n;
@@ -228,12 +252,11 @@ __global__ void raycastKernel(
 
     if (px >= width || py >= height) return;
 
-    struct VoxelRaw { float tsdf, weight, r, g, b, p[3]; };
-    VoxelRaw* voxels = (VoxelRaw*)voxels_void;
+    VoxelGPU* voxels = (VoxelGPU*)voxels_void;
 
     auto get_tsdf = [&](int xi, int yi, int zi) {
-        VoxelRaw& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        return (v.weight <= 0.001f) ? 1.0f : (v.tsdf / v.weight);
+        VoxelGPU& v = voxels[zi * resolution * resolution + yi * resolution + xi];
+        return (v.weight <= 0.001f) ? 1.0f : v.tsdf;
     };
 
     // Ray in camera space

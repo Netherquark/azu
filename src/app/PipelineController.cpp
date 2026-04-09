@@ -377,13 +377,17 @@ void PipelineController::meshingLoop() {
 }
 
 bool PipelineController::exportPLY(const std::string& path) {
-    // Force a mesh extraction if we don't have one yet
     uint64_t ver;
     meshing::MeshData mesh = shared_mesh_.snapshot(ver);
     if (mesh.empty()) {
-        std::cout << "[Pipeline] No mesh yet, extracting now...\n";
-        mesh = meshing::MarchingCubes::extract(*tsdf_, nullptr);
-        if (!mesh.empty()) shared_mesh_.update(meshing::MeshData(mesh));
+        std::cout << "[Pipeline] No mesh yet, extracting via meshingLoop...\n";
+        mesh_extraction_requested_.store(true);
+        int waits = 0;
+        while (shared_mesh_.snapshot(ver).empty() && waits < 100) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            waits++;
+        }
+        mesh = shared_mesh_.snapshot(ver);
     }
     if (mesh.empty()) {
         std::cerr << "[Pipeline] No mesh to export — scan more frames first.\n";
@@ -405,9 +409,14 @@ bool PipelineController::exportGLB(const std::string& path) {
     uint64_t ver;
     meshing::MeshData mesh = shared_mesh_.snapshot(ver);
     if (mesh.empty()) {
-        std::cout << "[Pipeline] No mesh yet, extracting now...\n";
-        mesh = meshing::MarchingCubes::extract(*tsdf_, nullptr);
-        if (!mesh.empty()) shared_mesh_.update(meshing::MeshData(mesh));
+        std::cout << "[Pipeline] No mesh yet, extracting via meshingLoop...\n";
+        mesh_extraction_requested_.store(true);
+        int waits = 0;
+        while (shared_mesh_.snapshot(ver).empty() && waits < 100) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            waits++;
+        }
+        mesh = shared_mesh_.snapshot(ver);
     }
     if (mesh.empty()) {
         std::cerr << "[Pipeline] No mesh to export — scan more frames first.\n";

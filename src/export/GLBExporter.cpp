@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <vector>
+#include <unordered_map>
 
 // Forward declarations/Includes for tinygltf
 #define TINYGLTF_NO_INCLUDE_JSON
@@ -21,10 +22,47 @@ static Eigen::Vector3f toGLTF(const Eigen::Vector3f& v) {
     return Eigen::Vector3f(v.x(), -v.y(), -v.z());
 }
 
-bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepath) {
-    if (mesh.empty()) {
+bool GLBExporter::write(const meshing::MeshData& input_mesh, const std::string& filepath) {
+    if (input_mesh.empty()) {
         std::cerr << "[GLB] Mesh is empty, nothing to export.\n";
         return false;
+    }
+
+    meshing::MeshData mesh;
+    // WELD VERTICES
+    struct VertexHash {
+        size_t operator()(const Eigen::Vector3f& v) const {
+            size_t h1 = std::hash<float>{}(v.x());
+            size_t h2 = std::hash<float>{}(v.y());
+            size_t h3 = std::hash<float>{}(v.z());
+            return h1 ^ (h2 << 1) ^ (h3 << 2);
+        }
+    };
+    std::unordered_map<Eigen::Vector3f, uint32_t, VertexHash> vertex_map;
+    bool in_has_normals = (input_mesh.normals.size() == input_mesh.positions.size());
+    bool in_has_colors = (input_mesh.colors.size() == input_mesh.positions.size() * 3);
+    
+    mesh.indices.reserve(input_mesh.indices.size());
+    
+    for (size_t i = 0; i < input_mesh.indices.size(); ++i) {
+        uint32_t orig_idx = input_mesh.indices[i];
+        const Eigen::Vector3f& pos = input_mesh.positions[orig_idx];
+        
+        auto it = vertex_map.find(pos);
+        if (it != vertex_map.end()) {
+            mesh.indices.push_back(it->second);
+        } else {
+            uint32_t new_idx = static_cast<uint32_t>(mesh.positions.size());
+            vertex_map[pos] = new_idx;
+            mesh.positions.push_back(pos);
+            if (in_has_normals) mesh.normals.push_back(input_mesh.normals[orig_idx]);
+            if (in_has_colors) {
+                mesh.colors.push_back(input_mesh.colors[orig_idx*3+0]);
+                mesh.colors.push_back(input_mesh.colors[orig_idx*3+1]);
+                mesh.colors.push_back(input_mesh.colors[orig_idx*3+2]);
+            }
+            mesh.indices.push_back(new_idx);
+        }
     }
 
     const size_t nvert = mesh.positions.size();
@@ -198,7 +236,11 @@ bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepa
     // Default material
     tinygltf::Material mat;
     mat.name = "ScanMaterial";
-    mat.pbrMetallicRoughness.baseColorFactor = {0.72, 0.78, 0.85, 1.0};
+    if (has_colors) {
+        mat.pbrMetallicRoughness.baseColorFactor = {1.0, 1.0, 1.0, 1.0};
+    } else {
+        mat.pbrMetallicRoughness.baseColorFactor = {0.72, 0.78, 0.85, 1.0};
+    }
     mat.pbrMetallicRoughness.metallicFactor  = 0.0;
     mat.pbrMetallicRoughness.roughnessFactor = 0.8;
     model.materials.push_back(mat);
