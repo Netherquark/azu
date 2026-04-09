@@ -124,7 +124,7 @@ void PipelineController::reset() {
     first_frame_  = true;
     frame_count_  = 0;
     metrics_      = PipelineMetrics{};
-    shared_mesh_.update(meshing::MeshData{});
+    shared_mesh_.update(std::make_shared<meshing::MeshData>());
     state_.store(PipelineState::Idle);
 }
 

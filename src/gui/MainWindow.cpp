@@ -172,12 +172,12 @@ void MainWindow::onMeshReady() {
     uint64_t ver;
     auto mesh = pipeline_->sharedMesh().snapshot(ver);
 
-    if (gl_widget_) {
-        gl_widget_->updateMesh(mesh);
+    if (gl_widget_ && mesh) {
+        gl_widget_->updateMesh(*mesh);
     }
 
     // Enable export once we have a mesh
-    if (!mesh.empty()) {
+    if (mesh && !mesh->empty()) {
         control_panel_->setExportEnabled(true);
     }
 }

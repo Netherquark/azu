@@ -393,9 +393,9 @@ std::shared_ptr<MeshData> MarchingCubes::extract(const tsdf::TSDFVolume& volume,
                                             ProgressCallback progress_cb)
 {
     const auto& p     = volume.params();
-    const int   RES_X = p.resolution.x();
-    const int   RES_Y = p.resolution.y();
-    const int   RES_Z = p.resolution.z();
+    const int   RES_X = p.resolution;
+    const int   RES_Y = p.resolution;
+    const int   RES_Z = p.resolution;
 
     std::shared_ptr<MeshData> mesh_final = std::make_shared<MeshData>();
 

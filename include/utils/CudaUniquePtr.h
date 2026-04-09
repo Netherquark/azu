@@ -1,5 +1,7 @@
 #pragma once
 
+#ifdef CUDA_ENABLED
+
 #include <cuda_runtime.h>
 #include <memory>
 #include <stdexcept>
@@ -42,3 +44,5 @@ CudaUniquePtr<T> make_cuda_unique(size_t count) {
 
 } // namespace utils
 } // namespace kfusion
+
+#endif // CUDA_ENABLED
