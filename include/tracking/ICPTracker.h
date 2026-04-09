@@ -71,9 +71,11 @@ public:
 #endif
 
     const ICPParams& params() const { return params_; }
+    void setNumThreads(int n) { num_threads_.store(n); }
 
 private:
     ICPParams params_;
+    std::atomic<int> num_threads_{0};
 
     ICPResult trackLevel(const sensor::FrameData& live_level,
                          const ModelFrame&        model,

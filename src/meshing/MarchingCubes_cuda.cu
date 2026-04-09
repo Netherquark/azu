@@ -78,15 +78,6 @@ __constant__ int c_corner_offsets[8][3];
 __constant__ int c_edge_corners[12][2];
 
 // ---------------------------------------------------------------------------
-// Static member allocation
-// ---------------------------------------------------------------------------
-uint32_t* MarchingCubes::d_voxel_tri_counts_ = nullptr;
-uint32_t* MarchingCubes::d_voxel_offsets_    = nullptr;
-float3*   MarchingCubes::d_mesh_vertices_    = nullptr;
-float3*   MarchingCubes::d_mesh_normals_     = nullptr;
-uint8_t*  MarchingCubes::d_mesh_colors_      = nullptr;
-
-// ---------------------------------------------------------------------------
 // GPU Kernels
 // ---------------------------------------------------------------------------
 
@@ -144,7 +135,7 @@ __global__ void classifyVoxelKernel(
 
     int tri_count = 0;
     if (c_edge_table[cube_idx] != 0) {
-        for (int i = 0; c_tri_table[cube_idx][i] != -1; i += 3) {
+        for (int i = 0; i < 16 && c_tri_table[cube_idx][i] != -1; i += 3) {
             tri_count++;
         }
     }
@@ -153,7 +144,7 @@ __global__ void classifyVoxelKernel(
 
 __global__ void generateMeshKernel(
     void* voxels_void, int resolution, float voxel_size, float3 origin,
-    const uint32_t* offsets,
+    const uint32_t* offsets, size_t max_tris,
     float3* out_v, float3* out_n, uint8_t* out_c)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -166,6 +157,9 @@ __global__ void generateMeshKernel(
     uint32_t offset = offsets[idx];
     uint32_t next_offset = offsets[idx + 1];
     if (offset == next_offset) return;
+
+    // BOUNDS CHECK: Prevent GPU buffer overflow
+    if (next_offset > max_tris) return;
 
     struct VoxelRaw { float tsdf, weight, r, g, b, p[3]; };
     VoxelRaw* voxels = (VoxelRaw*)voxels_void;
@@ -208,7 +202,7 @@ __global__ void generateMeshKernel(
     VoxelRaw& base_v = voxels[idx];
     uint32_t out_idx_start = offset * 3;
     int v_count = 0;
-    for (int i = 0; c_tri_table[cube_idx][i] != -1; i += 3) {
+    for (int i = 0; i < 16 && c_tri_table[cube_idx][i] != -1; i += 3) {
         for (int k = 0; k < 3; ++k) {
             int e = c_tri_table[cube_idx][i + k];
             out_v[out_idx_start + v_count] = edge_v[e];
@@ -226,16 +220,18 @@ __global__ void generateMeshKernel(
 // ---------------------------------------------------------------------------
 
 void MarchingCubes::initGPU(int res) {
+    if (res == last_resolution_ && d_voxel_tri_counts_) return;
+    freeGPU();
+
     size_t n = (size_t)res * res * res;
     cudaMalloc(&d_voxel_tri_counts_, n * sizeof(uint32_t));
     cudaMalloc(&d_voxel_offsets_, (n + 1) * sizeof(uint32_t));
     
-    size_t max_tris = 2000000; // ~60MB
-    cudaMalloc(&d_mesh_vertices_, max_tris * 3 * sizeof(float3));
-    cudaMalloc(&d_mesh_normals_,  max_tris * 3 * sizeof(float3));
-    cudaMalloc(&d_mesh_colors_,   max_tris * 3 * 3 * sizeof(uint8_t));
+    cudaMalloc(&d_mesh_vertices_, max_triangles_ * 3 * sizeof(float3));
+    cudaMalloc(&d_mesh_normals_,  max_triangles_ * 3 * sizeof(float3));
+    cudaMalloc(&d_mesh_colors_,   max_triangles_ * 3 * 3 * sizeof(uint8_t));
 
-    // Corner offsets and edge corners from MarchingCubes.cpp
+    // Tables from MarchingCubes.cpp
     const int corner_offsets[8][3] = {{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
     const int edge_corners[12][2] = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
 
@@ -243,6 +239,8 @@ void MarchingCubes::initGPU(int res) {
     cudaMemcpyToSymbol(c_tri_table, tri_table, 256 * 16 * sizeof(int));
     cudaMemcpyToSymbol(c_corner_offsets, corner_offsets, 8 * 3 * sizeof(int));
     cudaMemcpyToSymbol(c_edge_corners, edge_corners, 12 * 2 * sizeof(int));
+    
+    last_resolution_ = res;
 }
 
 void MarchingCubes::freeGPU() {
@@ -252,19 +250,20 @@ void MarchingCubes::freeGPU() {
     if (d_mesh_normals_)     cudaFree(d_mesh_normals_);
     if (d_mesh_colors_)      cudaFree(d_mesh_colors_);
     d_voxel_tri_counts_ = d_voxel_offsets_ = nullptr;
+    d_mesh_vertices_ = d_mesh_normals_ = nullptr;
+    d_mesh_colors_ = nullptr;
 }
 
 MeshData MarchingCubes::extractGPU(const tsdf::TSDFVolume& volume) {
     const auto& params = volume.params();
-    if (!d_voxel_tri_counts_) initGPU(params.resolution);
+    initGPU(params.resolution);
 
     size_t n = (size_t)params.resolution * params.resolution * params.resolution;
     dim3 block(8, 8, 8);
     dim3 grid((params.resolution + 7)/8, (params.resolution + 7)/8, (params.resolution + 7)/8);
 
     classifyVoxelKernel<<<grid, block>>>((void*)volume.getGPUVoxels(), params.resolution, d_voxel_tri_counts_);
-    cudaDeviceSynchronize();
-
+    
     thrust::device_ptr<uint32_t> d_counts(d_voxel_tri_counts_);
     thrust::device_ptr<uint32_t> d_offsets(d_voxel_offsets_);
     thrust::exclusive_scan(d_counts, d_counts + n, d_offsets);
@@ -275,27 +274,32 @@ MeshData MarchingCubes::extractGPU(const tsdf::TSDFVolume& volume) {
     cudaMemcpy(&last_count, d_voxel_tri_counts_ + n - 1, 4, cudaMemcpyDeviceToHost);
     total_tris += last_count;
     
-    // Set (n)th offset for generate kernel logic
     cudaMemcpy(d_voxel_offsets_ + n, &total_tris, 4, cudaMemcpyDeviceToDevice);
 
     MeshData mesh;
     if (total_tris > 0) {
+        uint32_t capped_tris = (total_tris > max_triangles_) ? (uint32_t)max_triangles_ : total_tris;
+        
         float3 origin = {params.origin.x(), params.origin.y(), params.origin.z()};
         generateMeshKernel<<<grid, block>>>(
             (void*)volume.getGPUVoxels(), params.resolution, params.voxel_size, origin,
-            d_voxel_offsets_, d_mesh_vertices_, d_mesh_normals_, d_mesh_colors_
+            d_voxel_offsets_, max_triangles_, d_mesh_vertices_, d_mesh_normals_, d_mesh_colors_
         );
         cudaDeviceSynchronize();
 
-        mesh.positions.resize(total_tris * 3);
-        mesh.normals.resize(total_tris * 3);
-        mesh.colors.resize(total_tris * 3 * 3);
-        mesh.indices.resize(total_tris * 3);
+        mesh.positions.resize(capped_tris * 3);
+        mesh.normals.resize(capped_tris * 3);
+        mesh.colors.resize(capped_tris * 3 * 3);
+        mesh.indices.resize(capped_tris * 3);
         
-        cudaMemcpy(mesh.positions.data(), d_mesh_vertices_, total_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(mesh.normals.data(), d_mesh_normals_, total_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(mesh.colors.data(), d_mesh_colors_, total_tris * 9, cudaMemcpyDeviceToHost);
-        for (uint32_t i = 0; i < total_tris * 3; ++i) mesh.indices[i] = i;
+        cudaMemcpy(mesh.positions.data(), d_mesh_vertices_, capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
+        cudaMemcpy(mesh.normals.data(), d_mesh_normals_, capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
+        cudaMemcpy(mesh.colors.data(), d_mesh_colors_, capped_tris * 9, cudaMemcpyDeviceToHost);
+        for (uint32_t i = 0; i < capped_tris * 3; ++i) mesh.indices[i] = i;
+        
+        if (total_tris > max_triangles_) {
+            std::cerr << "[MC] Reached max_triangles limit (" << max_triangles_ << "). Mesh is truncated.\n";
+        }
     }
 
     return mesh;

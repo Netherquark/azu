@@ -24,6 +24,9 @@ struct FrameData {
     int width  = FRAME_W;
     int height = FRAME_H;
     uint64_t frame_id = 0;
+    
+    // The world-from-camera transformation found by the tracker for this specific frame
+    Eigen::Matrix4f pose = Eigen::Matrix4f::Identity();
 
     FrameData() {
         vertices.resize(FRAME_W * FRAME_H, Eigen::Vector3f::Zero());

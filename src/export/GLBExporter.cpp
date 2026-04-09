@@ -1,33 +1,24 @@
 #include "export/GLBExporter.h"
-
-// tinygltf requires nlohmann/json. Both headers live in third_party/tinygltf/
-// and that directory is on the include path via CMakeLists.txt (TINYGLTF_DIR).
-#include "json.hpp"
-#define TINYGLTF_NO_INCLUDE_JSON
-#include <tiny_gltf.h>
-
 #include <iostream>
 #include <cstring>
 #include <vector>
-#include <limits>
+
+// Forward declarations/Includes for tinygltf
+#define TINYGLTF_NO_INCLUDE_JSON
+#include "json.hpp"
+#include "tiny_gltf.h"
 
 namespace kfusion {
 namespace export_io {
 
-// Kinect → Unity coordinate conversion:
+// Kinect → Unity/GLTF coordinate conversion:
 //   Kinect: right-handed, X right, Y down, Z forward
-//   Unity:  left-handed,  X right, Y up,   Z forward
-// Conversion: flip Y (negate Y component), then negate Z (for left-handed flip)
-// Net result: (x, y, z) → (x, -y, -z) in Unity terms
-// BUT tinygltf/GLTF is right-handed Y-up. Unity imports GLTF with Y-up.
-// So convert Kinect camera space to GLTF Y-up:
-//   kinect (x, y, z) → gltf (x, -y, z)   [flip Y only, keep RH, Z-forward]
-// Unity then applies its own LH conversion on GLTF import (Z is flipped automatically)
-// Reference: Unity GLTF importer flips Z on import to go from RH to LH.
-// So: kinect_y-down → gltf_y-up: multiply Y by -1
-
+//   GLTF:   right-handed, X right, Y up,   Z backward
+// Mapping:
+//   (x, y, z) -> (x, -y, -z)
+// Flipping two axes (Y and Z) preserves winding order.
 static Eigen::Vector3f toGLTF(const Eigen::Vector3f& v) {
-    return Eigen::Vector3f(v.x(), -v.y(), v.z());
+    return Eigen::Vector3f(v.x(), -v.y(), -v.z());
 }
 
 bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepath) {
@@ -60,15 +51,11 @@ bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepa
     {
         std::vector<float> pos_data;
         pos_data.reserve(nvert * 3);
-        Eigen::Vector3f pos_min( 1e9f,  1e9f,  1e9f);
-        Eigen::Vector3f pos_max(-1e9f, -1e9f, -1e9f);
         for (size_t i = 0; i < nvert; ++i) {
             Eigen::Vector3f p = toGLTF(mesh.positions[i]);
             pos_data.push_back(p.x());
             pos_data.push_back(p.y());
             pos_data.push_back(p.z());
-            pos_min = pos_min.cwiseMin(p);
-            pos_max = pos_max.cwiseMax(p);
         }
         appendBytes(pos_data.data(), pos_data.size() * sizeof(float));
     }
@@ -83,6 +70,9 @@ bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepa
         norm_data.reserve(nvert * 3);
         for (size_t i = 0; i < nvert; ++i) {
             Eigen::Vector3f n = toGLTF(mesh.normals[i]);
+            // Re-normalize after transformation
+            float len = n.norm();
+            if (len > 1e-6f) n /= len;
             norm_data.push_back(n.x());
             norm_data.push_back(n.y());
             norm_data.push_back(n.z());
@@ -91,20 +81,21 @@ bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepa
         norm_length = buffer_data.size() - norm_offset;
     }
 
-    // --- vertex colors (as vec4 FLOAT for GLTF compatibility) ---
+    // --- vertex colors (as vec4 UNSIGNED_BYTE normalized) ---
+    // Optimized: 4 bytes per vertex instead of 16
     size_t col_offset = 0;
     size_t col_length = 0;
     if (has_colors) {
         col_offset = buffer_data.size();
-        std::vector<float> col_data;
+        std::vector<uint8_t> col_data;
         col_data.reserve(nvert * 4);
         for (size_t i = 0; i < nvert; ++i) {
-            col_data.push_back(mesh.colors[i*3+0] / 255.0f);
-            col_data.push_back(mesh.colors[i*3+1] / 255.0f);
-            col_data.push_back(mesh.colors[i*3+2] / 255.0f);
-            col_data.push_back(1.0f);
+            col_data.push_back(mesh.colors[i*3+0]);
+            col_data.push_back(mesh.colors[i*3+1]);
+            col_data.push_back(mesh.colors[i*3+2]);
+            col_data.push_back(255); // alpha
         }
-        appendBytes(col_data.data(), col_data.size() * sizeof(float));
+        appendBytes(col_data.data(), col_data.size());
         col_length = buffer_data.size() - col_offset;
     }
 
@@ -140,6 +131,7 @@ bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepa
 
     // Helper: add accessor
     auto addAccessor = [&](int bv_idx, int component_type, int type, size_t count,
+                           bool normalized = false,
                            bool has_minmax = false,
                            std::vector<double> min_v = {},
                            std::vector<double> max_v = {}) -> int {
@@ -149,6 +141,7 @@ bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepa
         acc.componentType = component_type;
         acc.type          = type;
         acc.count         = count;
+        acc.normalized    = normalized;
         if (has_minmax) { acc.minValues = min_v; acc.maxValues = max_v; }
         model.accessors.push_back(acc);
         return static_cast<int>(model.accessors.size()) - 1;
@@ -166,7 +159,7 @@ bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepa
         bmax = bmax.cwiseMax(pg);
     }
     int acc_pos = addAccessor(bv_pos, TINYGLTF_COMPONENT_TYPE_FLOAT,
-                              TINYGLTF_TYPE_VEC3, nvert, true,
+                              TINYGLTF_TYPE_VEC3, nvert, false, true,
                               {bmin.x(), bmin.y(), bmin.z()},
                               {bmax.x(), bmax.y(), bmax.z()});
 
@@ -180,8 +173,8 @@ bool GLBExporter::write(const meshing::MeshData& mesh, const std::string& filepa
     int acc_col = -1;
     if (has_colors) {
         int bv_col = addBufferView(col_offset, col_length, TINYGLTF_TARGET_ARRAY_BUFFER);
-        acc_col = addAccessor(bv_col, TINYGLTF_COMPONENT_TYPE_FLOAT,
-                              TINYGLTF_TYPE_VEC4, nvert);
+        acc_col = addAccessor(bv_col, TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE,
+                              TINYGLTF_TYPE_VEC4, nvert, true); // normalized=true
     }
 
     int bv_idx_gltf = addBufferView(idx_offset, idx_length, TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER);

@@ -60,6 +60,10 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
 
         if (inlier_count < 10) break;
 
+        // Regularize the Hessian (Tikhonov / Levenberg-Marquardt style)
+        // Helps avoid singular matrices in flat areas
+        A += Eigen::Matrix<float, 6, 6>::Identity() * 0.1f;
+
         // Solve: Ax = b using Cholesky decomposition
         Eigen::Matrix<float, 6, 1> x = A.ldlt().solve(b);
 
@@ -71,7 +75,7 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
         // Rodrigues: small angle → rotation matrix
         Eigen::Matrix3f R = Eigen::Matrix3f::Identity();
         float angle = std::sqrt(rx*rx + ry*ry + rz*rz);
-        if (angle > 1e-6f) {
+        if (angle > 1e-4f) {
             Eigen::Vector3f axis(rx, ry, rz);
             axis.normalize();
             R = Eigen::AngleAxisf(angle, axis).toRotationMatrix();
@@ -90,7 +94,7 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
         result.error    = residual / static_cast<float>(std::max(inlier_count, 1));
         result.inliers  = inlier_count;
 
-        if (x.norm() < 1e-5f) {
+        if (x.norm() < 5e-5f) {
             result.converged = true;
             break;
         }
@@ -136,6 +140,16 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
     const Eigen::Matrix3f R_rel = R_rc * R_cw;
     const Eigen::Vector3f t_rel = R_rc * t_cw + t_rc;
 
+    // Use user-configured thread count or auto-detect
+    int num_threads = num_threads_.load();
+    if (num_threads <= 0) {
+#ifdef _OPENMP
+        num_threads = omp_get_max_threads();
+#else
+        num_threads = 1;
+#endif
+    }
+    
     // Thread-local accumulators
     struct LocalAcc {
         Eigen::Matrix<float,6,6> A;
@@ -146,20 +160,15 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
                      b(Eigen::Matrix<float,6,1>::Zero()),
                      residual(0.0f), count(0) {}
     };
-
-    // Fix: Use actual available threads instead of hardcoded 1
-    int num_threads = 1;
-    #ifdef _OPENMP
-    num_threads = omp_get_max_threads();
-    #endif
     std::vector<LocalAcc> local(num_threads);
 
     #pragma omp parallel for schedule(dynamic, 8) num_threads(num_threads)
     for (int y = 1; y < H - 1; ++y) {
         int tid = 0;
-        #ifdef _OPENMP
+#ifdef _OPENMP
         tid = omp_get_thread_num();
-        #endif
+#endif
+        if (tid >= num_threads) tid = 0; // Safety
         auto& acc = local[tid];
 
         for (int x = 1; x < W - 1; ++x) {
@@ -252,7 +261,7 @@ ICPResult ICPTracker::trackGPU(const sensor::FramePyramid& live,
     result.pose = pose_estimate;
     result.tracking_ok = true;
 
-    // 1. Upload live pyramid to GPU buffers
+    // 1. Upload live pyramid to GPU buffers (Reuse persistent buffers)
     for (int level = 0; level < sensor::FramePyramid::LEVELS; ++level) {
         const auto& ld = live.levels[level];
         size_t sz = ld.width * ld.height * sizeof(float3);

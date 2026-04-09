@@ -11,31 +11,36 @@ using ProgressCallback = std::function<void(float)>; // 0..1
 
 class MarchingCubes {
 public:
-    // CPU extraction path
+    MarchingCubes();
+    ~MarchingCubes();
+
+    // CPU extraction path (remains static as it's stateless)
     static MeshData extract(const tsdf::TSDFVolume& volume,
                             ProgressCallback        cb = nullptr);
 
-    // GPU extraction path
-    static MeshData extractGPU(const tsdf::TSDFVolume& volume);
+    // GPU extraction path (instance-based for buffer management)
+    MeshData extractGPU(const tsdf::TSDFVolume& volume);
 
     // Look-up tables for Marching Cubes
     static const int edge_table[256];
     static const int tri_table[256][16];
 
-#ifdef CUDA_ENABLED
 private:
-    // Persistent GPU buffers
-    static uint32_t* d_voxel_tri_counts_;
-    static uint32_t* d_voxel_offsets_;
-    static float3*   d_mesh_vertices_;
-    static float3*   d_mesh_normals_;
-    static uint8_t*  d_mesh_colors_;
+#ifdef CUDA_ENABLED
+    // Persistent GPU buffers owned by this instance
+    uint32_t* d_voxel_tri_counts_ = nullptr;
+    uint32_t* d_voxel_offsets_    = nullptr;
+    float3*   d_mesh_vertices_    = nullptr;
+    float3*   d_mesh_normals_     = nullptr;
+    uint8_t*  d_mesh_colors_      = nullptr;
     
-    static void initGPU(int resolution);
-    static void freeGPU();
+    size_t    max_triangles_      = 2000000;
+    int       last_resolution_    = 0;
+
+    void initGPU(int resolution);
+    void freeGPU();
 #endif
 
-private:
     static Eigen::Vector3f interpolateEdge(
         const Eigen::Vector3f& p1, float v1,
         const Eigen::Vector3f& p2, float v2);

@@ -4,12 +4,10 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
-#include <condition_variable>
-#include <array>
+#include <queue>
 #include <vector>
 #include <memory>
 #include <functional>
-#include "utils/RingBuffer.h"
 
 namespace kfusion {
 namespace sensor {
@@ -70,20 +68,28 @@ public:
     // Returns latest synchronized frame (zero-copy)
     std::shared_ptr<RawFrame> getLatestFrame();
 
+    // Internal helper to get/release frames from pool
+    void releaseFrame(std::shared_ptr<RawFrame> frame);
+
 private:
     // libfreenect state
     freenect_context* ctx_    = nullptr;
     freenect_device*  device_ = nullptr;
 
-    // Lock-free pipeline state
+    // Thread-safe pipeline state
     static constexpr size_t POOL_SIZE = 8;
     std::vector<std::shared_ptr<RawFrame>> pool_;
-    utils::RingBuffer<std::shared_ptr<RawFrame>> ready_queue_;
-    utils::RingBuffer<std::shared_ptr<RawFrame>> free_queue_;
     
-    // Indices currently assigned to libfreenect
-    std::atomic<int> current_depth_idx_{-1};
-    std::atomic<int> current_rgb_idx_{-1};
+    // We'll use a mutex-guarded queue for safety since libfreenect callbacks 
+    // and the pipeline thread might access these concurrently (beyond SPSC scope).
+    std::mutex              queue_mutex_;
+    std::queue<std::shared_ptr<RawFrame>> ready_queue_;
+    std::queue<std::shared_ptr<RawFrame>> free_queue_;
+    
+    // Pairing state
+    std::mutex              sync_mutex_;
+    std::shared_ptr<RawFrame> depth_pending_;
+    std::shared_ptr<RawFrame> rgb_pending_;
 
     uint64_t frame_counter_ = 0;
 
@@ -100,6 +106,9 @@ private:
 
     void onDepth(void* data, uint32_t timestamp);
     void onRgb(void* data, uint32_t timestamp);
+    
+    // Internal helper to get/release frames from pool
+    std::shared_ptr<RawFrame> acquireFreeFrame();
 };
 
 } // namespace sensor

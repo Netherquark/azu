@@ -68,10 +68,11 @@ public:
 
 private:
     // Components
-    std::unique_ptr<sensor::KinectSensor> sensor_;
-    std::unique_ptr<tracking::ICPTracker> tracker_;
-    std::unique_ptr<tsdf::TSDFVolume>     tsdf_;
-    meshing::SharedMesh                   shared_mesh_;
+    std::unique_ptr<sensor::KinectSensor>    sensor_;
+    std::unique_ptr<tracking::ICPTracker>    tracker_;
+    std::unique_ptr<tsdf::TSDFVolume>        tsdf_;
+    std::unique_ptr<meshing::MarchingCubes>  cubes_;
+    meshing::SharedMesh                      shared_mesh_;
 
     // State
     std::atomic<PipelineState> state_{PipelineState::Idle};
@@ -90,6 +91,13 @@ private:
     std::thread                integration_thread_;
     std::thread                meshing_thread_;
     std::atomic<bool>          running_{false};
+    std::atomic<int>           num_threads_{0}; // 0 = Auto
+
+    // Frame recycling pool (FrameData)
+    static constexpr size_t    DATA_POOL_SIZE = 6;
+    std::vector<std::shared_ptr<sensor::FrameData>> data_pool_;
+    std::queue<std::shared_ptr<sensor::FrameData>>  free_data_queue_;
+    std::mutex                                      data_pool_mutex_;
 
     // Raw frame queue (sensor callback → tracking thread)
     std::queue<std::shared_ptr<sensor::RawFrame>>  raw_queue_;
@@ -106,9 +114,19 @@ private:
     int                                   frame_count_    = 0;
     bool                                  first_frame_    = true;
 
-    // Tracking model frame (raycasted)
-    tracking::ModelFrame                  model_frame_;
-    std::mutex                            model_frame_mutex_;
+    // Tracking model frame (double-buffered PingPong)
+    struct PingPongModel {
+        tracking::ModelFrame buffers[2];
+        std::atomic<int>     front_idx{0}; // Read by tracking
+        std::atomic<int>     back_idx{1};  // Written by integration
+        std::mutex           mtx;
+
+        void swap() {
+            int f = front_idx.load();
+            front_idx.store(back_idx.load());
+            back_idx.store(f);
+        }
+    } model_pingpong_;
 
     // Mesh extraction trigger
     std::atomic<bool>                     mesh_extraction_requested_{false};
@@ -122,6 +140,16 @@ private:
 
     void updateMetrics();
     void postMetrics();
+
+    // Pool helpers
+    std::shared_ptr<sensor::FrameData> acquireFreeData();
+    void releaseData(std::shared_ptr<sensor::FrameData> data);
+    
+public:
+    void setNumThreads(int n) {
+        num_threads_.store(n);
+        if (tracker_) tracker_->setNumThreads(n);
+    }
 };
 
 } // namespace app

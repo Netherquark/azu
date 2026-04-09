@@ -10,6 +10,13 @@
 namespace kfusion {
 namespace meshing {
 
+MarchingCubes::MarchingCubes() {}
+MarchingCubes::~MarchingCubes() {
+#ifdef CUDA_ENABLED
+    freeGPU();
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Standard Marching Cubes edge table (256 entries)
 // ---------------------------------------------------------------------------

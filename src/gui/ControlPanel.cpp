@@ -1,7 +1,11 @@
 #include "gui/ControlPanel.h"
-#include <QVBoxLayout>
-#include <QGroupBox>
+#include <QPushButton>
+#include <QComboBox>
+#include <QSpinBox>
 #include <QLabel>
+#include <QGroupBox>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QFrame>
 
 namespace kfusion {
@@ -72,6 +76,15 @@ void ControlPanel::setupUI() {
     v_exp->addWidget(btn_glb_);
     root->addWidget(grp_export);
 
+    // Threads config
+    auto* thread_layout = new QHBoxLayout();
+    thread_layout->addWidget(new QLabel("Threads (0=Auto):"));
+    spin_threads_ = new QSpinBox(this);
+    spin_threads_->setRange(0, 256);
+    spin_threads_->setValue(0);
+    thread_layout->addWidget(spin_threads_);
+    root->addLayout(thread_layout);
+
     root->addStretch();
     setFixedWidth(200);
 }
@@ -84,6 +97,8 @@ void ControlPanel::connectSignals() {
     connect(btn_glb_,   &QPushButton::clicked, this, &ControlPanel::exportGLBClicked);
     connect(combo_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ControlPanel::modeChanged);
+    connect(spin_threads_, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &ControlPanel::threadsChanged);
 }
 
 void ControlPanel::onPipelineStarted() {

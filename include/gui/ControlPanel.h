@@ -1,9 +1,13 @@
 #pragma once
 
 #include <QWidget>
-#include <QPushButton>
-#include <QComboBox>
-#include <QLabel>
+
+QT_BEGIN_NAMESPACE
+class QPushButton;
+class QComboBox;
+class QSpinBox;
+class QLabel;
+QT_END_NAMESPACE
 
 namespace kfusion {
 namespace gui {
@@ -20,6 +24,7 @@ signals:
     void exportPLYClicked();
     void exportGLBClicked();
     void modeChanged(int index); // 0=PointCloud, 1=Mesh
+    void threadsChanged(int n);
 
 public slots:
     void onPipelineStarted();
@@ -33,6 +38,7 @@ private:
     QPushButton* btn_ply_    = nullptr;
     QPushButton* btn_glb_    = nullptr;
     QComboBox*   combo_mode_ = nullptr;
+    QSpinBox*    spin_threads_ = nullptr;
     QLabel*      lbl_status_ = nullptr;
 
     void setupUI();

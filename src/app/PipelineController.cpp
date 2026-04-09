@@ -1,8 +1,9 @@
 #include "app/PipelineController.h"
-#include "sensor/FrameData.h"
-#include "sensor/KinectSensor.h"
-#include "export/PLYExporter.h"
+#include "tsdf/TSDFVolume.h"
+#include "meshing/MeshData.h"
+#include "meshing/MarchingCubes.h"
 #include "export/GLBExporter.h"
+#include "export/PLYExporter.h"
 #include <QCoreApplication>
 #include <iostream>
 #include <chrono>
@@ -23,6 +24,13 @@ PipelineController::PipelineController()
     sensor_  = std::make_unique<sensor::KinectSensor>();
     tracker_ = std::make_unique<tracking::ICPTracker>();
     tsdf_    = std::make_unique<tsdf::TSDFVolume>();
+    cubes_   = std::make_unique<meshing::MarchingCubes>();
+    
+    // Initialize data pool
+    for (size_t i = 0; i < DATA_POOL_SIZE; ++i) {
+        data_pool_.push_back(std::make_shared<sensor::FrameData>());
+        free_data_queue_.push(data_pool_.back());
+    }
 }
 
 PipelineController::~PipelineController() {
@@ -59,9 +67,11 @@ bool PipelineController::start() {
 #ifdef CUDA_ENABLED
     tsdf_->initGPU();
     tracker_->initGPU();
-    // Pre-allocate ModelFrame GPU buffers
-    cudaMalloc(&model_frame_.d_vertices, sensor::FRAME_W * sensor::FRAME_H * sizeof(float3));
-    cudaMalloc(&model_frame_.d_normals,  sensor::FRAME_W * sensor::FRAME_H * sizeof(float3));
+    // Pre-allocate ModelFrame GPU buffers for PingPong
+    for (int i = 0; i < 2; ++i) {
+        cudaMalloc(&model_pingpong_.buffers[i].d_vertices, sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT * sizeof(float3));
+        cudaMalloc(&model_pingpong_.buffers[i].d_normals,  sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT * sizeof(float3));
+    }
 #endif
 
     // Launch pipeline threads
@@ -93,7 +103,9 @@ void PipelineController::stop() {
 #ifdef CUDA_ENABLED
     tsdf_->freeGPU();
     tracker_->freeGPU();
-    model_frame_.freeGPU();
+    for (int i = 0; i < 2; ++i) {
+        model_pingpong_.buffers[i].freeGPU();
+    }
 #endif
 }
 
@@ -150,10 +162,18 @@ void PipelineController::trackingLoop() {
             raw_queue_.pop();
         }
 
-        // Build processed frame here (on tracking thread, safe for OpenMP)
-        auto frame = std::make_shared<sensor::FrameData>();
+        // Build processed frame here (using pool)
+        auto frame = acquireFreeData();
+        if (!frame) {
+            sensor_->releaseFrame(std::move(raw)); // Don't forget to recycle raw
+            continue;
+        }
+        
         frame->frame_id = raw->frame_id;
         sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame);
+        
+        // We can release 'raw' immediately after buildFrameData copies it
+        sensor_->releaseFrame(std::move(raw));
 
         // Notify UI (throttled, safe shared_ptr copy)
         if (frame_ready_cb_) {
@@ -170,11 +190,14 @@ void PipelineController::trackingLoop() {
         // First frame: initialize pose; skip tracking
         if (first_frame_) {
             first_frame_ = false;
+            frame->pose = Eigen::Matrix4f::Identity();
             // Enqueue for integration
             {
                 std::lock_guard<std::mutex> lk(integration_queue_mutex_);
                 if (integration_queue_.size() < 3)
                     integration_queue_.push(frame);
+                else
+                    releaseData(std::move(frame));
             }
             integration_queue_cv_.notify_one();
 
@@ -190,11 +213,11 @@ void PipelineController::trackingLoop() {
         sensor::FramePyramid pyramid;
         sensor::buildFramePyramid(*frame, pyramid);
 
-        // Get model frame (raycasted from TSDF)
-        tracking::ModelFrame model;
+        // Get model frame safely from PingPong storage
+        tracking::ModelFrame model_ref;
         {
-            std::lock_guard<std::mutex> lk(model_frame_mutex_);
-            model = model_frame_;
+            std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
+            model_ref = model_pingpong_.buffers[model_pingpong_.front_idx.load()];
         }
 
         // Run ICP
@@ -205,9 +228,9 @@ void PipelineController::trackingLoop() {
         }
 
 #ifdef CUDA_ENABLED
-        auto icp_result = tracker_->trackGPU(pyramid, model, prev_pose);
+        auto icp_result = tracker_->trackGPU(pyramid, model_ref, prev_pose);
 #else
-        auto icp_result = tracker_->track(pyramid, model, prev_pose);
+        auto icp_result = tracker_->track(pyramid, model_ref, prev_pose);
 #endif
 
         // Update tracking fps
@@ -227,6 +250,7 @@ void PipelineController::trackingLoop() {
                 std::lock_guard<std::mutex> lk(pose_mutex_);
                 current_pose_ = icp_result.pose;
             }
+            frame->pose = icp_result.pose; // Couple pose with frame!
             state_.store(PipelineState::Running);
 
             // Enqueue for integration
@@ -234,10 +258,13 @@ void PipelineController::trackingLoop() {
                 std::lock_guard<std::mutex> lk(integration_queue_mutex_);
                 if (integration_queue_.size() < 3)
                     integration_queue_.push(frame);
+                else
+                    releaseData(std::move(frame)); // Drop if queue full
             }
             integration_queue_cv_.notify_one();
         } else {
             state_.store(PipelineState::TrackingLost);
+            releaseData(std::move(frame));
         }
     }
 }
@@ -259,46 +286,44 @@ void PipelineController::integrationLoop() {
             integration_queue_.pop();
         }
 
-        Eigen::Matrix4f pose;
-        {
-            std::lock_guard<std::mutex> lk(pose_mutex_);
-            pose = current_pose_;
-        }
-
-        // Integrate into TSDF
+        // Integrate into TSDF using THE POSE AT CAPTURE
         tsdf_->integrate(frame->depth_meters.data(),
                          frame->rgb.data(),
-                         pose,
+                         frame->pose,
                          static_cast<float>(sensor::FX),
                          static_cast<float>(sensor::FY),
                          static_cast<float>(sensor::CX),
                          static_cast<float>(sensor::CY),
                          frame->width, frame->height);
 
-        // Raycast updated model (every 5 frames to save time)
+        // Raycast into the BACK buffer
         static int raycast_skip = 0;
         if (++raycast_skip % 5 == 0) {
-            std::lock_guard<std::mutex> lk(model_frame_mutex_);
+            int back = model_pingpong_.back_idx.load();
 #ifdef CUDA_ENABLED
-            tsdf_->raycastGPU(pose,
+            tsdf_->raycastGPU(frame->pose,
                               static_cast<float>(sensor::FX),
                               static_cast<float>(sensor::FY),
                               static_cast<float>(sensor::CX),
                               static_cast<float>(sensor::CY),
-                              sensor::FRAME_W, sensor::FRAME_H,
-                              model_frame_.d_vertices,
-                              model_frame_.d_normals);
-            // Optionally sync to CPU if UI needs it, but we keep it on GPU for tracking
+                              sensor::DEPTH_WIDTH, sensor::DEPTH_HEIGHT,
+                              model_pingpong_.buffers[back].d_vertices,
+                              model_pingpong_.buffers[back].d_normals);
 #else
-            tsdf_->raycast(pose,
+            tsdf_->raycast(frame->pose,
                            static_cast<float>(sensor::FX),
                            static_cast<float>(sensor::FY),
                            static_cast<float>(sensor::CX),
                            static_cast<float>(sensor::CY),
-                           sensor::FRAME_W, sensor::FRAME_H,
-                           model_frame_.vertices.data(),
-                           model_frame_.normals.data());
+                           sensor::DEPTH_WIDTH, sensor::DEPTH_HEIGHT,
+                           model_pingpong_.buffers[back].vertices.data(),
+                           model_pingpong_.buffers[back].normals.data());
 #endif
+            // Atomic swap
+            {
+                std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
+                model_pingpong_.swap();
+            }
         }
 
         {
@@ -306,6 +331,9 @@ void PipelineController::integrationLoop() {
             metrics_.integrated_frames = tsdf_->integratedFrames();
             metrics_.volume_usage_pct  = tsdf_->usageFraction() * 100.0f;
         }
+
+        // Return frame to pool!
+        releaseData(std::move(frame));
 
         ++frames_since_mesh;
         if (frames_since_mesh >= MESH_TRIGGER_FRAMES) {
@@ -327,9 +355,9 @@ void PipelineController::meshingLoop() {
         mesh_extract_progress_.store(0.0f);
 
 #ifdef CUDA_ENABLED
-        auto mesh = meshing::MarchingCubes::extractGPU(*tsdf_);
+        auto mesh = cubes_->extractGPU(*tsdf_);
 #else
-        auto mesh = meshing::MarchingCubes::extract(*tsdf_, [this](float p) {
+        auto mesh = cubes_->extract(*tsdf_, [this](float p) {
             mesh_extract_progress_.store(p);
             std::lock_guard<std::mutex> lk(metrics_mutex_);
             metrics_.mesh_extract_pct = p * 100.0f;
@@ -395,6 +423,20 @@ bool PipelineController::exportGLB(const std::string& path) {
         metrics_.export_pct = ok ? 100.0f : 0.0f;
     }
     return ok;
+}
+
+std::shared_ptr<sensor::FrameData> PipelineController::acquireFreeData() {
+    std::lock_guard<std::mutex> lk(data_pool_mutex_);
+    if (free_data_queue_.empty()) return nullptr;
+    auto f = free_data_queue_.front();
+    free_data_queue_.pop();
+    return f;
+}
+
+void PipelineController::releaseData(std::shared_ptr<sensor::FrameData> data) {
+    if (!data) return;
+    std::lock_guard<std::mutex> lk(data_pool_mutex_);
+    free_data_queue_.push(std::move(data));
 }
 
 } // namespace app

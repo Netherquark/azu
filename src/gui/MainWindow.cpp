@@ -77,6 +77,9 @@ void MainWindow::connectSignals() {
     connect(control_panel_, &ControlPanel::exportPLYClicked, this, &MainWindow::onExportPLY);
     connect(control_panel_, &ControlPanel::exportGLBClicked, this, &MainWindow::onExportGLB);
     connect(control_panel_, &ControlPanel::modeChanged, this, &MainWindow::onModeChanged);
+    connect(control_panel_, &ControlPanel::threadsChanged, this, [this](int n) {
+        if (pipeline_) pipeline_->setNumThreads(n);
+    });
 
     // Pipeline → UI (via Qt::QueuedConnection for thread safety)
     pipeline_->setMetricsCallback([this](const app::PipelineMetrics& m) {

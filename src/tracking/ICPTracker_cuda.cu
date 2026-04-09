@@ -216,7 +216,8 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
 
         if (inliers < 10) break;
 
-        // Solve update
+        // Solve update with Tikhonov regularization
+        A += Eigen::Matrix<float,6,6>::Identity() * 0.1f;
         Eigen::Matrix<float,6,1> update = A.ldlt().solve(b);
         
         // Update pose (Rodrigues approximation)
