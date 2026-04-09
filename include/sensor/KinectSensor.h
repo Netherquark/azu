@@ -8,9 +8,8 @@
 #include <array>
 #include <vector>
 #include <memory>
+#include <functional>
 #include "utils/RingBuffer.h"
-#include <vector>
-#include <memory>
 
 namespace kfusion {
 namespace sensor {

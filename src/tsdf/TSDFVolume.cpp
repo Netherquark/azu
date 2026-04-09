@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
+#include <mutex>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -85,8 +86,6 @@ float TSDFVolume::interpolate(const Eigen::Vector3f& world_pos) const {
 
     // Trilinear interpolation
     float c000 = tsdf(x0,   y0,   z0);
-    // ... rest of interpolate ...
-    float c000 = tsdf(x0,   y0,   z0);
     float c100 = tsdf(x0+1, y0,   z0);
     float c010 = tsdf(x0,   y0+1, z0);
     float c110 = tsdf(x0+1, y0+1, z0);
@@ -94,6 +93,10 @@ float TSDFVolume::interpolate(const Eigen::Vector3f& world_pos) const {
     float c101 = tsdf(x0+1, y0,   z0+1);
     float c011 = tsdf(x0,   y0+1, z0+1);
     float c111 = tsdf(x0+1, y0+1, z0+1);
+
+    float fx = local.x() - x0;
+    float fy = local.y() - y0;
+    float fz = local.z() - z0;
 
     return c000*(1-fx)*(1-fy)*(1-fz) + c100*fx*(1-fy)*(1-fz)
          + c010*(1-fx)*fy*(1-fz)     + c110*fx*fy*(1-fz)
@@ -225,7 +228,7 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
     }
     const_cast<TSDFVolume*>(this)->raycastGPU(pose, fx, fy, cx, cy, width, height, d_v, d_n);
     cudaMemcpy(vertices_out, d_v, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
-    cudaMemcpy(normals_out,  d_v, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
+    cudaMemcpy(normals_out,  d_n, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
 #else
     std::shared_lock<std::shared_mutex> lk(mutex_);
     const float step     = params_.voxel_size;        // full voxel step (faster)
@@ -296,6 +299,7 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
             }
         }
     }
+#endif
 }
 
 } // namespace tsdf

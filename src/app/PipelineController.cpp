@@ -45,8 +45,8 @@ bool PipelineController::start() {
     current_pose_  = Eigen::Matrix4f::Identity();
 
     // Set frame callback before starting capture
-    sensor_->setFrameCallback([this](const sensor::RawFrame& raw) {
-        onRawFrame(raw);
+    sensor_->setFrameCallback([this](std::shared_ptr<sensor::RawFrame> raw) {
+        onRawFrame(std::move(raw));
     });
 
     if (!sensor_->start()) {
@@ -111,18 +111,15 @@ void PipelineController::reset() {
     state_.store(PipelineState::Idle);
 }
 
-// Called from sensor capture thread — must be lightweight, just copy raw data
-void PipelineController::onRawFrame(const sensor::RawFrame& raw) {
+// Called from sensor capture thread — must be lightweight
+void PipelineController::onRawFrame(std::shared_ptr<sensor::RawFrame> raw) {
     if (!running_.load()) return;
-
-    // Copy raw frame onto heap and enqueue for tracking thread to process
-    auto raw_copy = std::make_shared<sensor::RawFrame>(raw);
 
     {
         std::lock_guard<std::mutex> lk(tracking_queue_mutex_);
         if (raw_queue_.size() < 3) {
             // Store raw frame — processing happens in tracking thread
-            raw_queue_.push(raw_copy);
+            raw_queue_.push(std::move(raw));
         }
     }
     tracking_queue_cv_.notify_one();

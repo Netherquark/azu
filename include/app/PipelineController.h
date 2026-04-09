@@ -115,7 +115,7 @@ private:
     std::atomic<float>                    mesh_extract_progress_{0.0f};
     std::atomic<float>                    export_progress_{0.0f};
 
-    void onRawFrame(const sensor::RawFrame& raw);
+    void onRawFrame(std::shared_ptr<sensor::RawFrame> raw);
     void trackingLoop();
     void integrationLoop();
     void meshingLoop();

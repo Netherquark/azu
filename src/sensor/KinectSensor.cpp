@@ -15,7 +15,7 @@ KinectSensor::KinectSensor()
     for (size_t i = 0; i < POOL_SIZE; ++i) {
         auto frame = std::make_shared<RawFrame>();
         pool_.push_back(frame);
-        free_queue_.push(frame);
+        free_queue_.push(std::move(frame));
     }
 }
 
@@ -143,8 +143,8 @@ void KinectSensor::onDepth(void* data, uint32_t timestamp) {
 
     if (pending->rgb_valid) {
         pending->frame_id = ++frame_counter_;
-        ready_queue_.push(pending);
         if (frame_callback_) frame_callback_(pending);
+        ready_queue_.push(std::move(pending));
         pending = nullptr;
     }
 }
@@ -162,8 +162,8 @@ void KinectSensor::onRgb(void* data, uint32_t timestamp) {
 
     if (pending->depth_valid) {
         pending->frame_id = ++frame_counter_;
-        ready_queue_.push(pending);
         if (frame_callback_) frame_callback_(pending);
+        ready_queue_.push(std::move(pending));
         pending = nullptr;
     }
 }

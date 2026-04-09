@@ -72,6 +72,16 @@ public:
 
     const ICPParams& params() const { return params_; }
 
+private:
+    ICPParams params_;
+
+    ICPResult trackLevel(const sensor::FrameData& live_level,
+                         const ModelFrame&        model,
+                         const Eigen::Matrix4f&   pose_estimate,
+                         const Eigen::Matrix4f&   ref_pose,
+                         int                      level,
+                         int                      max_iter);
+
 #ifdef CUDA_ENABLED
     // Persistent GPU buffers to avoid allocations
     float* d_hessian_ = nullptr; 

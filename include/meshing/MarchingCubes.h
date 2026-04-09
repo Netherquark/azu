@@ -11,8 +11,16 @@ using ProgressCallback = std::function<void(float)>; // 0..1
 
 class MarchingCubes {
 public:
+    // CPU extraction path
+    static MeshData extract(const tsdf::TSDFVolume& volume,
+                            ProgressCallback        cb = nullptr);
+
     // GPU extraction path
     static MeshData extractGPU(const tsdf::TSDFVolume& volume);
+
+    // Look-up tables for Marching Cubes
+    static const int edge_table[256];
+    static const int tri_table[256][16];
 
 #ifdef CUDA_ENABLED
 private:
