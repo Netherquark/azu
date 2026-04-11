@@ -81,11 +81,16 @@ void MainWindow::connectSignals() {
         if (pipeline_) pipeline_->setNumThreads(n);
     });
 
-    // Pipeline → UI (via Qt::QueuedConnection for thread safety)
-    pipeline_->setMetricsCallback([this](const app::PipelineMetrics& m) {
-        std::lock_guard<std::mutex> lk(metrics_copy_mutex_);
-        cached_metrics_ = m;
-        cached_metrics_.state = pipeline_->state();
+    connect(control_panel_, &ControlPanel::hyperparamsApplyClicked, this, [this]() {
+        auto h = control_panel_->hyperparamsFromUi();
+        if (h.min_depth >= h.max_depth) {
+            QMessageBox::warning(this, "Invalid depth range",
+                "Depth minimum must be less than depth maximum.");
+            return;
+        }
+        pipeline_->setHyperparams(h);
+        control_panel_->setHyperparams(pipeline_->hyperparamsSnapshot());
+        statusBar()->showMessage("Hyperparameters applied.");
     });
 
     pipeline_->setFrameReadyCallback([this](const sensor::FrameData& frame) {
@@ -102,6 +107,8 @@ void MainWindow::connectSignals() {
             onMeshReady();
         }, Qt::QueuedConnection);
     });
+
+    control_panel_->setHyperparams(pipeline_->hyperparamsSnapshot());
 }
 
 void MainWindow::onStartClicked() {
@@ -123,11 +130,31 @@ void MainWindow::onStopClicked() {
 }
 
 void MainWindow::onResetClicked() {
+    const bool was_capturing = pipeline_->isRunning();
+
     pipeline_->reset();
-    control_panel_->onPipelineStopped();
+
+    if (gl_widget_) gl_widget_->clearGeometry();
+
     control_panel_->setExportEnabled(false);
-    statusBar()->showMessage("Reset. Ready.");
-    if (metrics_panel_) metrics_panel_->update(app::PipelineMetrics{});
+
+    if (was_capturing) {
+        if (!pipeline_->start()) {
+            QMessageBox::critical(this, "Error",
+                "Scan was reset but failed to restart capture.\n"
+                "Check the Kinect connection and press Start again.");
+            control_panel_->onPipelineStopped();
+            statusBar()->showMessage("Reset failed to restart — press Start.");
+        } else {
+            control_panel_->onPipelineStarted();
+            statusBar()->showMessage("Scan reset — capturing again.");
+        }
+    } else {
+        control_panel_->onPipelineStopped();
+        statusBar()->showMessage("Volume cleared. Press Start to capture.");
+    }
+
+    if (metrics_panel_) metrics_panel_->update(pipeline_->metricsSnapshot());
 }
 
 void MainWindow::onExportPLY() {
@@ -160,11 +187,8 @@ void MainWindow::onModeChanged(int index) {
 }
 
 void MainWindow::onFrameReady(const sensor::FrameData& frame) {
-    // Only update point cloud if in point cloud mode
-    if (gl_widget_ && gl_widget_->property("renderMode").toInt() == 0)
-        gl_widget_->updatePointCloud(frame);
-    else if (gl_widget_)
-        gl_widget_->updatePointCloud(frame); // always keep it updated
+    // Always refresh GPU point cloud so "Mesh" preview can fall back until a mesh exists.
+    if (gl_widget_) gl_widget_->updatePointCloud(frame);
 }
 
 void MainWindow::onMeshReady() {
@@ -183,12 +207,9 @@ void MainWindow::onMeshReady() {
 }
 
 void MainWindow::onMetricsTimer() {
-    app::PipelineMetrics m;
-    {
-        std::lock_guard<std::mutex> lk(metrics_copy_mutex_);
-        m = cached_metrics_;
-    }
-    if (metrics_panel_) metrics_panel_->update(m);
+    if (!pipeline_ || !metrics_panel_) return;
+    app::PipelineMetrics m = pipeline_->metricsSnapshot();
+    metrics_panel_->update(m);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

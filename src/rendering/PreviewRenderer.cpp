@@ -1,9 +1,23 @@
 #include "rendering/PreviewRenderer.h"
+#include <Eigen/Core>
 #include <cstring>
 #include <iostream>
 
 namespace kfusion {
 namespace rendering {
+
+namespace {
+
+// Kinect camera space: +X right, +Y down (image), +Z forward. GL view: +Y up, −Z forward.
+// Equivalent to 180° about X: (x,y,z) → (x,−y,−z). Keeps right-handed volume.
+Eigen::Matrix4f kinectToOpenGL() {
+    Eigen::Matrix4f F = Eigen::Matrix4f::Identity();
+    F(1, 1) = -1.0f;
+    F(2, 2) = -1.0f;
+    return F;
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Shader sources
@@ -111,11 +125,13 @@ void PreviewRenderer::render() {
 
     if (mode_ == RenderMode::PointCloud) {
         renderPointCloud();
-    } else {
+    } else if (mesh_index_count_ > 0) {
         renderMesh();
+    } else {
+        // Mesh mode selected but no extraction yet (or empty) — keep showing live depth cloud.
+        renderPointCloud();
     }
 
-    // Store MVP for use in sub-renderers
     (void)MVP;
 }
 
@@ -191,6 +207,11 @@ void PreviewRenderer::uploadPointCloud(const sensor::FrameData& frame) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
+void PreviewRenderer::clearGeometry() {
+    pc_count_         = 0;
+    mesh_index_count_ = 0;
+}
+
 void PreviewRenderer::uploadMesh(const meshing::MeshData& mesh) {
     if (!initialized_ || mesh.empty()) return;
 
@@ -224,7 +245,8 @@ void PreviewRenderer::renderPointCloud() {
     float aspect = static_cast<float>(viewport_w_) / static_cast<float>(viewport_h_);
     Eigen::Matrix4f V   = camera_.viewMatrix();
     Eigen::Matrix4f P   = camera_.projectionMatrix(aspect);
-    Eigen::Matrix4f MVP = P * V;
+    const Eigen::Matrix4f F   = kinectToOpenGL();
+    const Eigen::Matrix4f MVP = P * V * F;
 
     pc_shader_.use();
     pc_shader_.setUniformMat4("uMVP", MVP.data());
@@ -242,14 +264,15 @@ void PreviewRenderer::renderMesh() {
     float aspect = static_cast<float>(viewport_w_) / static_cast<float>(viewport_h_);
     Eigen::Matrix4f V   = camera_.viewMatrix();
     Eigen::Matrix4f P   = camera_.projectionMatrix(aspect);
-    Eigen::Matrix4f MVP = P * V;
+    const Eigen::Matrix4f F    = kinectToOpenGL();
+    const Eigen::Matrix4f MV   = V * F;
+    const Eigen::Matrix4f MVP  = P * MV;
 
     mesh_shader_.use();
     mesh_shader_.setUniformMat4("uMVP", MVP.data());
-    mesh_shader_.setUniformMat4("uModelView", V.data());
+    mesh_shader_.setUniformMat4("uModelView", MV.data());
 
-    // Normal matrix: transpose(inverse(MV))
-    Eigen::Matrix3f normalMatrix = V.block<3,3>(0,0).inverse().transpose();
+    Eigen::Matrix3f normalMatrix = MV.block<3,3>(0,0).inverse().transpose();
     mesh_shader_.setUniformMat3("uNormalMatrix", normalMatrix.data());
 
     glBindVertexArray(mesh_vao_);

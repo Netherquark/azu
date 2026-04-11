@@ -35,6 +35,9 @@ public:
 
     const TSDFParams& params() const { return params_; }
 
+    /** Replace parameters. If resolution changes, voxel storage is reallocated and the volume is cleared. */
+    void setParams(const TSDFParams& p);
+
     // Integrate a depth frame into the volume
     // pose: world-from-camera 4x4 matrix
     // depth: meters per pixel (FRAME_W x FRAME_H)
@@ -95,6 +98,9 @@ private:
                z >= 0 && z < params_.resolution;
     }
 
+    // Trilinear TSDF sample; caller must already hold mutex_ (shared or unique)
+    float interpolateUnlocked(const Eigen::Vector3f& world_pos) const;
+
     // CPU integration kernel
     void integrateCPU(const float* depth_meters,
                       const uint8_t* rgb,
@@ -111,6 +117,7 @@ private:
 
     void* getGPUVoxels() const { return d_voxels_.get(); }
     void initGPU();
+    void freeGPU();
     void syncToGPU();
     void syncFromGPU();
     void integrateGPU(const float* depth_meters,
@@ -119,6 +126,10 @@ private:
                       float fx, float fy, 
                       float cx, float cy,
                       int width, int height);
+    void raycastGPU(const Eigen::Matrix4f& pose,
+                    float fx, float fy, float cx, float cy,
+                    int width, int height,
+                    float3* d_vertices, float3* d_normals);
 #endif
 };
 

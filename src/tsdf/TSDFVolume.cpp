@@ -42,6 +42,23 @@ void TSDFVolume::reset() {
     integrated_frames_.store(0);
 }
 
+void TSDFVolume::setParams(const TSDFParams& p) {
+    std::unique_lock<std::shared_mutex> lk(mutex_);
+    const bool res_changed = (p.resolution != params_.resolution);
+    params_ = p;
+    if (res_changed) {
+        const size_t n = static_cast<size_t>(params_.resolution)
+                       * static_cast<size_t>(params_.resolution)
+                       * static_cast<size_t>(params_.resolution);
+        voxels_.assign(n, Voxel{});
+        integrated_frames_.store(0);
+#ifdef CUDA_ENABLED
+        freeGPU();
+        initGPU();
+#endif
+    }
+}
+
 const Voxel& TSDFVolume::voxelAt(int x, int y, int z) const {
     std::shared_lock<std::shared_mutex> lk(mutex_);
     return voxels_[idx(x, y, z)];
@@ -69,7 +86,7 @@ Eigen::Vector3f TSDFVolume::voxelToWorld(int x, int y, int z) const {
     return params_.origin + Eigen::Vector3f(x, y, z) * params_.voxel_size;
 }
 
-float TSDFVolume::interpolate(const Eigen::Vector3f& world_pos) const {
+float TSDFVolume::interpolateUnlocked(const Eigen::Vector3f& world_pos) const {
     Eigen::Vector3f local = (world_pos - params_.origin) / params_.voxel_size;
     int x0 = static_cast<int>(std::floor(local.x()));
     int y0 = static_cast<int>(std::floor(local.y()));
@@ -78,13 +95,10 @@ float TSDFVolume::interpolate(const Eigen::Vector3f& world_pos) const {
     if (!inBounds(x0, y0, z0) || !inBounds(x0+1, y0+1, z0+1))
         return 1.0f;
 
-    std::shared_lock<std::shared_mutex> lk(mutex_);
-
     auto tsdf = [&](int x, int y, int z) -> float {
         return voxels_[idx(x,y,z)].tsdf;
     };
 
-    // Trilinear interpolation
     float c000 = tsdf(x0,   y0,   z0);
     float c100 = tsdf(x0+1, y0,   z0);
     float c010 = tsdf(x0,   y0+1, z0);
@@ -102,6 +116,19 @@ float TSDFVolume::interpolate(const Eigen::Vector3f& world_pos) const {
          + c010*(1-fx)*fy*(1-fz)     + c110*fx*fy*(1-fz)
          + c001*(1-fx)*(1-fy)*fz     + c101*fx*(1-fy)*fz
          + c011*(1-fx)*fy*fz         + c111*fx*fy*fz;
+}
+
+float TSDFVolume::interpolate(const Eigen::Vector3f& world_pos) const {
+    Eigen::Vector3f local = (world_pos - params_.origin) / params_.voxel_size;
+    int x0 = static_cast<int>(std::floor(local.x()));
+    int y0 = static_cast<int>(std::floor(local.y()));
+    int z0 = static_cast<int>(std::floor(local.z()));
+
+    if (!inBounds(x0, y0, z0) || !inBounds(x0+1, y0+1, z0+1))
+        return 1.0f;
+
+    std::shared_lock<std::shared_mutex> lk(mutex_);
+    return interpolateUnlocked(world_pos);
 }
 
 float TSDFVolume::usageFraction() const {
@@ -179,7 +206,8 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
 
                 if (!inBounds(vi.x(), vi.y(), vi.z())) continue;
 
-                Voxel& vox = voxelAt(vi.x(), vi.y(), vi.z());
+                // integrate() already holds mutex_; do not use voxelAt() (would deadlock).
+                Voxel& vox = voxels_[idx(vi.x(), vi.y(), vi.z())];
                 
                 // Distance from camera to voxel center along camera Z axis
                 // Camera-space voxel position: use pre-computed R_rc, t_rc
@@ -278,12 +306,13 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
                     float t_hit = prev_t + alpha * (t - prev_t);
                     Eigen::Vector3f hit_world = t_cw + ray_world * t_hit;
 
-                    float dx = interpolate(hit_world + Eigen::Vector3f(params_.voxel_size, 0, 0))
-                             - interpolate(hit_world - Eigen::Vector3f(params_.voxel_size, 0, 0));
-                    float dy = interpolate(hit_world + Eigen::Vector3f(0, params_.voxel_size, 0))
-                             - interpolate(hit_world - Eigen::Vector3f(0, params_.voxel_size, 0));
-                    float dz = interpolate(hit_world + Eigen::Vector3f(0, 0, params_.voxel_size))
-                             - interpolate(hit_world - Eigen::Vector3f(0, 0, params_.voxel_size));
+                    // raycast holds shared_lock; interpolate() would lock again (same thread → deadlock).
+                    float dx = interpolateUnlocked(hit_world + Eigen::Vector3f(params_.voxel_size, 0, 0))
+                             - interpolateUnlocked(hit_world - Eigen::Vector3f(params_.voxel_size, 0, 0));
+                    float dy = interpolateUnlocked(hit_world + Eigen::Vector3f(0, params_.voxel_size, 0))
+                             - interpolateUnlocked(hit_world - Eigen::Vector3f(0, params_.voxel_size, 0));
+                    float dz = interpolateUnlocked(hit_world + Eigen::Vector3f(0, 0, params_.voxel_size))
+                             - interpolateUnlocked(hit_world - Eigen::Vector3f(0, 0, params_.voxel_size));
 
                     Eigen::Vector3f normal(dx, dy, dz);
                     float nlen = normal.norm();

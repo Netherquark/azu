@@ -1,5 +1,7 @@
 #include "sensor/KinectSensor.h"
+#include "utils/Logger.h"
 #include <sys/time.h>
+#include <sstream>
 #include <cstring>
 #include <chrono>
 #include <iostream>
@@ -27,6 +29,9 @@ KinectSensor::~KinectSensor() {
 }
 
 bool KinectSensor::init() {
+    // After stop(), device/context stay open so the pipeline can start again (e.g. Reset scan).
+    if (device_) return true;
+
     if (freenect_init(&ctx_, nullptr) < 0) {
         std::cerr << "[Sensor] freenect_init failed\n";
         return false;
@@ -126,6 +131,13 @@ void KinectSensor::onDepth(void* data, uint32_t timestamp) {
         depth_pending_->frame_id = ++frame_counter_;
 
         if (frame_callback_) {
+            static uint64_t pair_log = 0;
+            if (++pair_log % 90 == 0) {
+                std::ostringstream oss;
+                oss << "paired depth+RGB frame_id=" << depth_pending_->frame_id
+                    << " → pipeline";
+                KFLOG_DEBUG("Sensor", oss.str());
+            }
             frame_callback_(depth_pending_);
         } else {
             std::lock_guard<std::mutex> qlk(queue_mutex_);

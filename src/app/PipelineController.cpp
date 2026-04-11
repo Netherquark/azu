@@ -4,8 +4,11 @@
 #include "meshing/MarchingCubes.h"
 #include "export/GLBExporter.h"
 #include "export/PLYExporter.h"
+#include "utils/Logger.h"
 #include <QCoreApplication>
 #include <iostream>
+#include <sstream>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
@@ -21,9 +24,10 @@ using namespace std::chrono;
 PipelineController::PipelineController()
     : current_pose_(Eigen::Matrix4f::Identity())
 {
+    syncIcpDepthFromRange(hyperparams_);
     sensor_  = std::make_unique<sensor::KinectSensor>();
-    tracker_ = std::make_unique<tracking::ICPTracker>();
-    tsdf_    = std::make_unique<tsdf::TSDFVolume>();
+    tracker_ = std::make_unique<tracking::ICPTracker>(hyperparams_.icp);
+    tsdf_    = std::make_unique<tsdf::TSDFVolume>(hyperparams_.tsdf);
     cubes_   = std::make_unique<meshing::MarchingCubes>();
     
     // Initialize data pool for automated recycling
@@ -46,7 +50,7 @@ bool PipelineController::start() {
     if (running_.load()) return true;
 
     if (!sensor_->init()) {
-        std::cerr << "[Pipeline] Sensor init failed\n";
+        KFLOG_ERROR("Pipeline", "Sensor init failed");
         state_.store(PipelineState::Error);
         return false;
     }
@@ -63,7 +67,7 @@ bool PipelineController::start() {
     });
 
     if (!sensor_->start()) {
-        std::cerr << "[Pipeline] Sensor start failed\n";
+        KFLOG_ERROR("Pipeline", "Sensor start failed");
         running_.store(false);
         state_.store(PipelineState::Error);
         return false;
@@ -87,7 +91,33 @@ bool PipelineController::start() {
     last_capture_time_  = steady_clock::now();
     last_tracking_time_ = steady_clock::now();
 
+    KFLOG_INFO("Pipeline", "Pipeline started (tracking + integration + meshing threads running)");
     return true;
+}
+
+PipelineMetrics PipelineController::metricsSnapshot() const {
+    std::lock_guard<std::mutex> lk(metrics_mutex_);
+    PipelineMetrics m = metrics_;
+    m.state = state_.load();
+    return m;
+}
+
+FusionHyperparams PipelineController::hyperparamsSnapshot() const {
+    std::lock_guard<std::mutex> lk(hyper_mutex_);
+    return hyperparams_;
+}
+
+void PipelineController::setHyperparams(const FusionHyperparams& h) {
+    FusionHyperparams hp = h;
+    syncIcpDepthFromRange(hp);
+    {
+        std::lock_guard<std::mutex> lk(hyper_mutex_);
+        hyperparams_ = hp;
+    }
+    tracker_->setParams(hp.icp);
+    tsdf_->setParams(hp.tsdf);
+    KFLOG_INFO("Pipeline",
+               "Hyperparameters applied (depth clip, TSDF grid, ICP). Changing resolution clears the volume.");
 }
 
 void PipelineController::stop() {
@@ -95,6 +125,7 @@ void PipelineController::stop() {
     running_.store(false);
     state_.store(PipelineState::Stopped);
 
+    KFLOG_INFO("Pipeline", "Pipeline stopping (joining worker threads)...");
     sensor_->stop();
 
     // Wake up threads blocked on condition variables
@@ -109,13 +140,38 @@ void PipelineController::stop() {
     tsdf_->freeGPU();
     tracker_->freeGPU();
     for (int i = 0; i < 2; ++i) {
-        model_pingpong_.buffers[i].freeGPU();
+        model_pingpong_.buffers[i]->d_vertices.reset();
+        model_pingpong_.buffers[i]->d_normals.reset();
     }
 #endif
+    KFLOG_INFO("Pipeline", "Pipeline stopped");
 }
 
 void PipelineController::reset() {
     stop();
+
+    {
+        std::lock_guard<std::mutex> lk(tracking_queue_mutex_);
+        while (!raw_queue_.empty()) {
+            raw_queue_.pop(); // shared_ptr release returns RawFrame to sensor pool
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(integration_queue_mutex_);
+        while (!integration_queue_.empty()) {
+            integration_queue_.pop(); // returns FrameData to data pool
+        }
+    }
+
+    mesh_extraction_requested_.store(false);
+
+    for (int i = 0; i < 2; ++i) {
+        if (!model_pingpong_.buffers[i]) continue;
+        auto& mf = *model_pingpong_.buffers[i];
+        std::fill(mf.vertices.begin(), mf.vertices.end(), Eigen::Vector3f::Zero());
+        std::fill(mf.normals.begin(), mf.normals.end(), Eigen::Vector3f::Zero());
+    }
+
     tsdf_->reset();
     {
         std::lock_guard<std::mutex> lk(pose_mutex_);
@@ -126,6 +182,7 @@ void PipelineController::reset() {
     metrics_      = PipelineMetrics{};
     shared_mesh_.update(std::make_shared<meshing::MeshData>());
     state_.store(PipelineState::Idle);
+    KFLOG_INFO("Pipeline", "Volume and pose reset; queues drained; mesh cleared");
 }
 
 // Called from sensor capture thread — must be lightweight
@@ -146,10 +203,20 @@ void PipelineController::onRawFrame(std::shared_ptr<sensor::RawFrame> raw) {
     float dt = duration<float>(now - last_capture_time_).count();
     last_capture_time_ = now;
 
+    int fc = 0;
+    float inst_fps = 0.0f;
     {
         std::lock_guard<std::mutex> lk(metrics_mutex_);
         metrics_.capture_fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
         metrics_.frame_count = ++frame_count_;
+        fc = metrics_.frame_count;
+        inst_fps = metrics_.capture_fps;
+    }
+    if (fc % 60 == 0) {
+        std::ostringstream oss;
+        oss << "sensor→pipeline: paired frames received=" << fc
+            << " instantaneous_capture_fps=" << inst_fps;
+        KFLOG_DEBUG("Pipeline", oss.str());
     }
 }
 
@@ -170,12 +237,19 @@ void PipelineController::trackingLoop() {
         // Build processed frame here (using pool)
         auto frame = acquireFreeData();
         if (!frame) {
+            KFLOG_WARN("Pipeline", "FrameData pool exhausted — dropping raw frame (increase pool or slow capture)");
             sensor_->releaseFrame(std::move(raw)); // Don't forget to recycle raw
             continue;
         }
         
         frame->frame_id = raw->frame_id;
-        sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame);
+        float d_min = 0.3f, d_max = 5.0f;
+        {
+            std::lock_guard<std::mutex> lk(hyper_mutex_);
+            d_min = hyperparams_.min_depth;
+            d_max = hyperparams_.max_depth;
+        }
+        sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame, d_min, d_max);
         
         // We can release 'raw' immediately after buildFrameData copies it
         sensor_->releaseFrame(std::move(raw));
@@ -211,6 +285,7 @@ void PipelineController::trackingLoop() {
                 metrics_.tracking_ok = true;
                 metrics_.icp_error   = 0.0f;
             }
+            KFLOG_INFO("Pipeline", "First depth frame: pose=identity, queued for TSDF integration (ICP starts next frame)");
             continue;
         }
 
@@ -248,6 +323,19 @@ void PipelineController::trackingLoop() {
             metrics_.tracking_fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
             metrics_.icp_error    = icp_result.error;
             metrics_.tracking_ok  = icp_result.tracking_ok;
+        }
+
+        if (!icp_result.tracking_ok) {
+            static int lost_log = 0;
+            if (++lost_log % 45 == 1) {
+                std::ostringstream oss;
+                oss << "ICP/tracking failed — no TSDF integration for this frame "
+                    << "(inliers=" << icp_result.inliers
+                    << " err=" << icp_result.error
+                    << " converged=" << (icp_result.converged ? "yes" : "no")
+                    << "). Move device slowly or improve scene geometry.";
+                KFLOG_WARN("Pipeline", oss.str());
+            }
         }
 
         if (icp_result.tracking_ok) {
@@ -328,8 +416,15 @@ void PipelineController::integrationLoop() {
 
         {
             std::lock_guard<std::mutex> lk(metrics_mutex_);
-            metrics_.integrated_frames = tsdf_->integratedFrames();
+            metrics_.integrated_frames = integrated_count;
             metrics_.volume_usage_pct  = tsdf_->usageFraction() * 100.0f;
+        }
+
+        if (integrated_count % 20 == 0 && integrated_count > 0) {
+            std::ostringstream oss;
+            oss << "TSDF: integrated_frames=" << integrated_count
+                << " volume_fill=" << (tsdf_->usageFraction() * 100.0f) << "%";
+            KFLOG_INFO("Pipeline", oss.str());
         }
 
         // Return frame to pool!
@@ -353,6 +448,7 @@ void PipelineController::meshingLoop() {
         mesh_extraction_requested_.store(false);
 
         mesh_extract_progress_.store(0.0f);
+        KFLOG_INFO("Pipeline", "Marching cubes: mesh extraction started (CPU/GPU path)");
 
 #ifdef CUDA_ENABLED
         auto mesh = cubes_->extractGPU(*tsdf_);
@@ -370,8 +466,15 @@ void PipelineController::meshingLoop() {
             metrics_.mesh_extract_pct = 100.0f;
         }
 
-        if (mesh) {
+        if (mesh && !mesh->empty()) {
+            std::ostringstream oss;
+            oss << "Mesh ready: triangles=" << mesh->triangleCount()
+                << " vertices=" << mesh->positions.size();
+            KFLOG_INFO("Pipeline", oss.str());
             shared_mesh_.update(std::move(mesh));
+            if (mesh_ready_cb_) mesh_ready_cb_();
+        } else {
+            KFLOG_WARN("Pipeline", "Mesh extraction produced empty mesh (scan more surface or check TSDF fill)");
             if (mesh_ready_cb_) mesh_ready_cb_();
         }
     }

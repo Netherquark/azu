@@ -1,11 +1,13 @@
 #pragma once
 
 #include <QWidget>
+#include "app/FusionHyperparams.h"
 
 QT_BEGIN_NAMESPACE
 class QPushButton;
 class QComboBox;
 class QSpinBox;
+class QDoubleSpinBox;
 class QLabel;
 QT_END_NAMESPACE
 
@@ -17,6 +19,9 @@ class ControlPanel : public QWidget {
 public:
     explicit ControlPanel(QWidget* parent = nullptr);
 
+    app::FusionHyperparams hyperparamsFromUi() const;
+    void setHyperparams(const app::FusionHyperparams& h);
+
 signals:
     void startClicked();
     void stopClicked();
@@ -25,6 +30,7 @@ signals:
     void exportGLBClicked();
     void modeChanged(int index); // 0=PointCloud, 1=Mesh
     void threadsChanged(int n);
+    void hyperparamsApplyClicked();
 
 public slots:
     void onPipelineStarted();
@@ -40,6 +46,22 @@ private:
     QComboBox*   combo_mode_ = nullptr;
     QSpinBox*    spin_threads_ = nullptr;
     QLabel*      lbl_status_ = nullptr;
+
+    QDoubleSpinBox* spin_depth_min_  = nullptr;
+    QDoubleSpinBox* spin_depth_max_  = nullptr;
+    QDoubleSpinBox* spin_voxel_      = nullptr;
+    QDoubleSpinBox* spin_trunc_      = nullptr;
+    QDoubleSpinBox* spin_max_weight_ = nullptr;
+    QSpinBox*       spin_resolution_ = nullptr;
+    QDoubleSpinBox* spin_origin_x_   = nullptr;
+    QDoubleSpinBox* spin_origin_y_   = nullptr;
+    QDoubleSpinBox* spin_origin_z_   = nullptr;
+    QDoubleSpinBox* spin_icp_dist_   = nullptr;
+    QDoubleSpinBox* spin_icp_angle_  = nullptr;
+    QSpinBox*       spin_icp_it0_    = nullptr;
+    QSpinBox*       spin_icp_it1_    = nullptr;
+    QSpinBox*       spin_icp_it2_    = nullptr;
+    QPushButton*    btn_apply_hyper_ = nullptr;
 
     void setupUI();
     void connectSignals();

@@ -50,10 +50,6 @@ private:
 
     QTimer* metrics_timer_ = nullptr;
 
-    // Thread-safe metrics copy for timer refresh
-    app::PipelineMetrics cached_metrics_;
-    std::mutex           metrics_copy_mutex_;
-
     void setupUI();
     void connectSignals();
 };

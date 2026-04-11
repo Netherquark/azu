@@ -15,6 +15,7 @@
 #include "tsdf/TSDFVolume.h"
 #include "meshing/MarchingCubes.h"
 #include "meshing/MeshData.h"
+#include "app/FusionHyperparams.h"
 #include <Eigen/Core>
 
 namespace kfusion {
@@ -55,18 +56,29 @@ public:
     void stop();
     void reset();
 
+    /** True while capture + pipeline worker threads are active. */
+    bool isRunning() const { return running_.load(); }
+
     bool exportPLY(const std::string& path);
     bool exportGLB(const std::string& path);
 
+    /** Optional subscriber; not invoked automatically — poll metricsSnapshot() from a timer instead. */
     void setMetricsCallback(MetricsCallback cb)    { metrics_cb_ = std::move(cb); }
     void setFrameReadyCallback(FrameReadyCallback cb) { frame_ready_cb_ = std::move(cb); }
     void setMeshReadyCallback(MeshReadyCallback cb)   { mesh_ready_cb_ = std::move(cb); }
 
     meshing::SharedMesh& sharedMesh() { return shared_mesh_; }
-    const PipelineMetrics& metrics() const { return metrics_; }
+    /** Thread-safe copy for UI / diagnostics (locks internal metrics mutex). */
+    PipelineMetrics metricsSnapshot() const;
     PipelineState state() const { return state_.load(); }
 
+    FusionHyperparams hyperparamsSnapshot() const;
+    void              setHyperparams(const FusionHyperparams& h);
+
 private:
+    FusionHyperparams          hyperparams_{FusionHyperparams::defaults()};
+    mutable std::mutex         hyper_mutex_;
+
     // Components
     std::unique_ptr<sensor::KinectSensor>    sensor_;
     std::unique_ptr<tracking::ICPTracker>    tracker_;
@@ -137,9 +149,6 @@ private:
     void trackingLoop();
     void integrationLoop();
     void meshingLoop();
-
-    void updateMetrics();
-    void postMetrics();
 
     // Pool helpers
     std::shared_ptr<sensor::FrameData> acquireFreeData();

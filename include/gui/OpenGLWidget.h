@@ -19,6 +19,7 @@ public:
     void setRenderMode(rendering::RenderMode mode);
     void updatePointCloud(const sensor::FrameData& frame);
     void updateMesh(const meshing::MeshData& mesh);
+    void clearGeometry();
 
 protected:
     void initializeGL() override;

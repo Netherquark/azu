@@ -44,6 +44,13 @@ void OpenGLWidget::updateMesh(const meshing::MeshData& mesh) {
     update();
 }
 
+void OpenGLWidget::clearGeometry() {
+    makeCurrent();
+    if (renderer_) renderer_->clearGeometry();
+    doneCurrent();
+    update();
+}
+
 void OpenGLWidget::initializeGL() {
     initializeOpenGLFunctions();
     renderer_ = std::make_unique<rendering::PreviewRenderer>();

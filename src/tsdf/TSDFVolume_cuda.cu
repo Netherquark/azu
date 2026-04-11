@@ -133,8 +133,16 @@ __global__ void integrationKernel_PixelParallel(
 // -------------------------------------------------------------------
 // Host-side GPU management
 // -------------------------------------------------------------------
+void TSDFVolume::freeGPU() {
+    d_voxels_.reset();
+    d_depth_.reset();
+    d_rgb_.reset();
+    gpu_valid_ = false;
+}
+
 void TSDFVolume::initGPU() {
-    size_t n = static_cast<size_t>(params_.resolution.x()) * params_.resolution.y() * params_.resolution.z();
+    const int res = params_.resolution;
+    size_t n = static_cast<size_t>(res) * static_cast<size_t>(res) * static_cast<size_t>(res);
     d_voxels_ = utils::make_cuda_unique<void>(n * sizeof(VoxelGPU));
     d_depth_  = utils::make_cuda_unique<float>(640 * 480);
     d_rgb_    = utils::make_cuda_unique<uint8_t>(640 * 480 * 3);
@@ -197,7 +205,7 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
     integrationKernel_PixelParallel<<<grid, block>>>(
-        (VoxelGPU*)d_voxels_.get(), params_.resolution.x(), params_.voxel_size, origin, params_.truncation, params_.max_weight,
+        (VoxelGPU*)d_voxels_.get(), params_.resolution, params_.voxel_size, origin, params_.truncation, params_.max_weight,
         d_depth_.get(), d_rgb_.get(), width, height, fx, fy, cx, cy,
         R_cw(0,0), R_cw(0,1), R_cw(0,2), R_cw(1,0), R_cw(1,1), R_cw(1,2), R_cw(2,0), R_cw(2,1), R_cw(2,2),
         t_cw.x(), t_cw.y(), t_cw.z(),
@@ -324,7 +332,7 @@ void TSDFVolume::raycastGPU(const Eigen::Matrix4f& pose,
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
     raycastKernel<<<grid, block>>>(
-        d_voxels_.get(), params_.resolution.x(), params_.voxel_size, f_origin,
+        d_voxels_.get(), params_.resolution, params_.voxel_size, f_origin,
         fx, fy, cx, cy,
         R(0,0), R(0,1), R(0,2), t.x(),
         R(1,0), R(1,1), R(1,2), t.y(),

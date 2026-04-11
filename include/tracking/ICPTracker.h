@@ -62,6 +62,7 @@ public:
 #endif
 
     const ICPParams& params() const { return params_; }
+    void setParams(const ICPParams& p) { params_ = p; }
     void setNumThreads(int n) { num_threads_.store(n); }
 
 private:

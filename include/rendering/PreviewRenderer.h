@@ -33,6 +33,9 @@ public:
     // Upload mesh for rendering
     void uploadMesh(const meshing::MeshData& mesh);
 
+    /** Clear uploaded point cloud and mesh (e.g. after reset scan). */
+    void clearGeometry();
+
     OrbitCamera& camera() { return camera_; }
 
 private:

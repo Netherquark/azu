@@ -1,8 +1,13 @@
 #include <QApplication>
 #include <QSurfaceFormat>
 #include <QStyleFactory>
+#include <cctype>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <string>
 #include "gui/MainWindow.h"
+#include "utils/Logger.h"
 
 int main(int argc, char* argv[]) {
     // Set OpenGL surface format globally before creating QApplication
@@ -34,6 +39,19 @@ int main(int argc, char* argv[]) {
     dark.setColor(QPalette::ToolTipBase,     QColor(50, 50, 60));
     dark.setColor(QPalette::ToolTipText,     QColor(200, 200, 200));
     app.setPalette(dark);
+
+    bool verbose_cli = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--verbose") == 0 || std::strcmp(argv[i], "-v") == 0)
+            verbose_cli = true;
+    }
+    const char* env_log = std::getenv("KFUSION_LOG");
+    std::string env_str = env_log ? env_log : "";
+    for (auto& c : env_str) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (verbose_cli || env_str == "debug" || env_str == "1" || env_str == "verbose") {
+        kfusion::utils::Logger::instance().setLevel(kfusion::utils::LogLevel::Debug);
+        std::cerr << "[KinectFusionQt] Verbose logging: KFUSION_LOG=debug or --verbose\n";
+    }
 
     std::cout << "KinectFusionQt v1.0 starting...\n";
 

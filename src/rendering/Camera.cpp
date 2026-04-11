@@ -8,8 +8,9 @@ namespace rendering {
 OrbitCamera::OrbitCamera() = default;
 
 void OrbitCamera::orbit(float dx, float dy) {
-    azimuth_   += dx * 0.01f;
-    elevation_ += dy * 0.01f;
+    // Match screen-space drag: pull right → scene moves right; pull down → look down.
+    azimuth_   -= dx * 0.01f;
+    elevation_ -= dy * 0.01f;
     elevation_  = std::clamp(elevation_, -1.5f, 1.5f);
 }
 
@@ -28,7 +29,7 @@ void OrbitCamera::pan(float dx, float dy) {
     Eigen::Vector3f up   (-sin_az * std::sin(elevation_), cos_el, -cos_az * std::sin(elevation_));
 
     target_ += right * (-dx * 0.005f * distance_)
-             + up    * ( dy * 0.005f * distance_);
+             + up    * (-dy * 0.005f * distance_);
 }
 
 void OrbitCamera::reset() {
