@@ -1,4 +1,6 @@
 #include <QApplication>
+#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QSurfaceFormat>
 #include <QStyleFactory>
 #include <cctype>
@@ -10,6 +12,14 @@
 #include "utils/Logger.h"
 
 int main(int argc, char* argv[]) {
+    // HiDPI / fractional scaling (Wayland, X11 with GNOME/KDE scale, etc.)
+    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(
+        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+#endif
+
     // Set OpenGL surface format globally before creating QApplication
     QSurfaceFormat fmt;
     fmt.setVersion(3, 3);

@@ -7,68 +7,12 @@
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
 #include <iostream>
+#include <memory>
 
 namespace kfusion {
 namespace meshing {
 
-// ---------------------------------------------------------------------------
-// Standard Marching Cubes Tables
-// ---------------------------------------------------------------------------
-static const int edge_table[256] = {
-    0x0, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c, 0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03, 0xe09, 0xf00,
-    0x190, 0x99, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c, 0x99c, 0x895, 0xb9f, 0xa96, 0xd9a, 0xc93, 0xf99, 0xe90,
-    0x230, 0x339, 0x33, 0x13a, 0x636, 0x73f, 0x435, 0x53c, 0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30,
-    0x3a0, 0x2a9, 0x1a3, 0xaa, 0x7a6, 0x6af, 0x5a5, 0x4ac, 0xbac, 0xaa5, 0x9af, 0x8a6, 0xfaa, 0xea3, 0xda9, 0xca0,
-    0x460, 0x569, 0x663, 0x76a, 0x66, 0x16f, 0x265, 0x36c, 0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963, 0xa69, 0xb60,
-    0x5f0, 0x4f9, 0x7f3, 0x6fa, 0x1f6, 0xff, 0x3f5, 0x2fc, 0xdfc, 0xcf5, 0xfff, 0xef6, 0x9fa, 0x8f3, 0xbf9, 0xaf0,
-    0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x55, 0x15c, 0xe5c, 0xf55, 0xc5f, 0xd56, 0xa5a, 0xb53, 0x859, 0x950,
-    0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6, 0x2cf, 0x1c5, 0xcc, 0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0,
-    0x8c0, 0x9c9, 0xac3, 0xbca, 0xcc6, 0xdcf, 0xec5, 0xfcc, 0xcc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9, 0x7c0,
-    0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c, 0x15c, 0x55, 0x35f, 0x256, 0x55a, 0x453, 0x759, 0x650,
-    0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc, 0x2fc, 0x3f5, 0xff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0,
-    0xb60, 0xa69, 0x963, 0x86a, 0xf66, 0xe6f, 0xd65, 0xc6c, 0x36c, 0x265, 0x16f, 0x66, 0x76a, 0x663, 0x569, 0x460,
-    0xca0, 0xda9, 0xea3, 0xfaa, 0x8a6, 0x9af, 0xaa5, 0xbac, 0x4ac, 0x5a5, 0x6af, 0x7a6, 0xaa, 0x1a3, 0x2a9, 0x3a0,
-    0xd30, 0xc39, 0xf33, 0xe3a, 0x936, 0x83f, 0xb35, 0xa3c, 0x53c, 0x435, 0x73f, 0x636, 0x13a, 0x33, 0x339, 0x230,
-    0xe90, 0xf99, 0xc93, 0xd9a, 0xa96, 0xb9f, 0x895, 0x99c, 0x69c, 0x795, 0x49f, 0x596, 0x29a, 0x393, 0x99, 0x190,
-    0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c, 0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x0
-};
-
-static const int tri_table[256][16] = {
-    {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {0, 8, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {0, 1, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {1, 9, 8, 1, 8, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {1, 2, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {0, 8, 3, 1, 2, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {9, 2, 10, 9, 0, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {2, 10, 8, 2, 8, 3, 2, 9, 8, -1, -1, -1, -1, -1, -1, -1},
-    {3, 11, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {0, 8, 11, 0, 11, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {9, 0, 1, 3, 11, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {9, 11, 2, 9, 8, 11, 1, 9, 2, -1, -1, -1, -1, -1, -1, -1},
-    {1, 3, 11, 1, 11, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {0, 8, 10, 0, 10, 1, 10, 8, 11, -1, -1, -1, -1, -1, -1, -1},
-    {3, 11, 10, 3, 10, 9, 0, 3, 9, -1, -1, -1, -1, -1, -1, -1},
-    {10, 9, 8, 10, 8, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {4, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {4, 7, 11, 4, 11, 3, 4, 3, 0, -1, -1, -1, -1, -1, -1, -1},
-    {0, 1, 9, 4, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {1, 9, 8, 1, 8, 4, 1, 4, 7, 1, 7, 3, -1, -1, -1, -1},
-    {1, 2, 10, 4, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
-    {1, 2, 10, 3, 0, 8, 4, 7, 11, -1, -1, -1, -1, -1, -1, -1},
-    {4, 7, 8, 9, 2, 0, 2, 10, 0, -1, -1, -1, -1, -1, -1, -1},
-    {2, 10, 9, 2, 9, 0, 2, 0, 8, 2, 8, 11, 11, 8, 7, 4, 7, 4, 11, -1}, // Fixed length
-    // ... Truncated tables for brevity in this replace call ...
-    // Note: I will only provide a subset and rely on the model to fill in or I will provide the full file if needed.
-    // Actually, I should probably use a smaller replacement or just assume they are available if I use correct linking.
-    // But since I'm in a sandbox, I'll provide the start and the user will see.
-};
-
-// ... and so on ...
-// Instead of providing 256 lines of tables here, which is error prone and bulky,
-// I will just implement the most important parts and assume the user has the rest.
-// OR, I can just copy from MarchingCubes.cpp if I can read it fully.
-
+// MC tables: use the same host symbols as MarchingCubes.cpp (cudaMemcpyToSymbol in initGPU).
 
 // ---------------------------------------------------------------------------
 // Constant Tables (Copied to Device)
@@ -241,8 +185,8 @@ void MarchingCubes::initGPU(int res) {
     const int corner_offsets[8][3] = {{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
     const int edge_corners[12][2] = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
 
-    cudaMemcpyToSymbol(c_edge_table, edge_table, 256 * sizeof(int));
-    cudaMemcpyToSymbol(c_tri_table, tri_table, 256 * 16 * sizeof(int));
+    cudaMemcpyToSymbol(c_edge_table, MarchingCubes::edge_table, 256 * sizeof(int));
+    cudaMemcpyToSymbol(c_tri_table, MarchingCubes::tri_table, 256 * 16 * sizeof(int));
     cudaMemcpyToSymbol(c_corner_offsets, corner_offsets, 8 * 3 * sizeof(int));
     cudaMemcpyToSymbol(c_edge_corners, edge_corners, 12 * 2 * sizeof(int));
     
@@ -260,11 +204,13 @@ void MarchingCubes::freeGPU() {
     d_mesh_colors_ = nullptr;
 }
 
-MeshData MarchingCubes::extractGPU(const tsdf::TSDFVolume& volume) {
+std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volume) {
     const auto& params = volume.params();
     initGPU(params.resolution);
 
     size_t n = (size_t)params.resolution * params.resolution * params.resolution;
+    cudaMemset(d_voxel_tri_counts_, 0, n * sizeof(uint32_t));
+
     dim3 block(8, 8, 8);
     dim3 grid((params.resolution + 7)/8, (params.resolution + 7)/8, (params.resolution + 7)/8);
 
@@ -282,7 +228,7 @@ MeshData MarchingCubes::extractGPU(const tsdf::TSDFVolume& volume) {
     
     cudaMemcpy(d_voxel_offsets_ + n, &total_tris, 4, cudaMemcpyDeviceToDevice);
 
-    MeshData mesh;
+    auto mesh = std::make_shared<MeshData>();
     if (total_tris > 0) {
         uint32_t capped_tris = (total_tris > max_triangles_) ? (uint32_t)max_triangles_ : total_tris;
         
@@ -293,15 +239,15 @@ MeshData MarchingCubes::extractGPU(const tsdf::TSDFVolume& volume) {
         );
         cudaDeviceSynchronize();
 
-        mesh.positions.resize(capped_tris * 3);
-        mesh.normals.resize(capped_tris * 3);
-        mesh.colors.resize(capped_tris * 3 * 3);
-        mesh.indices.resize(capped_tris * 3);
+        mesh->positions.resize(capped_tris * 3);
+        mesh->normals.resize(capped_tris * 3);
+        mesh->colors.resize(capped_tris * 3 * 3);
+        mesh->indices.resize(capped_tris * 3);
         
-        cudaMemcpy(mesh.positions.data(), d_mesh_vertices_, capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(mesh.normals.data(), d_mesh_normals_, capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(mesh.colors.data(), d_mesh_colors_, capped_tris * 9, cudaMemcpyDeviceToHost);
-        for (uint32_t i = 0; i < capped_tris * 3; ++i) mesh.indices[i] = i;
+        cudaMemcpy(mesh->positions.data(), d_mesh_vertices_, capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
+        cudaMemcpy(mesh->normals.data(), d_mesh_normals_, capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
+        cudaMemcpy(mesh->colors.data(), d_mesh_colors_, capped_tris * 9, cudaMemcpyDeviceToHost);
+        for (uint32_t i = 0; i < capped_tris * 3; ++i) mesh->indices[i] = i;
         
         if (total_tris > max_triangles_) {
             std::cerr << "[MC] Reached max_triangles limit (" << max_triangles_ << "). Mesh is truncated.\n";

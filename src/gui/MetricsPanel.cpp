@@ -1,4 +1,5 @@
 #include "gui/MetricsPanel.h"
+#include "gui/UiScale.h"
 #include <QVBoxLayout>
 #include <QGroupBox>
 #include <QGridLayout>
@@ -9,12 +10,12 @@ namespace gui {
 
 MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
     setupUI();
-    setFixedWidth(220);
+    setPanelWidthInChars(*this, 15, 22);
 }
 
 QLabel* MetricsPanel::makeLabel(const QString& text) {
     auto* lbl = new QLabel(text, this);
-    lbl->setStyleSheet("color: #ccc; font-family: monospace; font-size: 11px;");
+    lbl->setStyleSheet("color: #ccc; font-family: monospace; font-size: 9pt;");
     return lbl;
 }
 
@@ -24,7 +25,7 @@ void MetricsPanel::setupUI() {
     root->setContentsMargins(8, 8, 8, 8);
 
     auto* title = new QLabel("Pipeline Metrics", this);
-    title->setStyleSheet("color: #eee; font-weight: bold; font-size: 13px;");
+    title->setStyleSheet("color: #eee; font-weight: bold; font-size: 10pt;");
     root->addWidget(title);
 
     // Performance group
@@ -72,7 +73,7 @@ void MetricsPanel::setupUI() {
     bar_volume_->setRange(0, 100);
     bar_volume_->setValue(0);
     bar_volume_->setTextVisible(false);
-    bar_volume_->setFixedHeight(8);
+    bar_volume_->setFixedHeight(uiThinBarHeight(*this));
     g_vol->addWidget(bar_volume_);
     root->addWidget(grp_vol);
 
@@ -89,7 +90,7 @@ void MetricsPanel::setupUI() {
     bar_mesh_extract_->setRange(0, 100);
     bar_mesh_extract_->setValue(0);
     bar_mesh_extract_->setTextVisible(false);
-    bar_mesh_extract_->setFixedHeight(8);
+    bar_mesh_extract_->setFixedHeight(uiThinBarHeight(*this));
     g_mesh->addWidget(new QLabel("Extraction:", this));
     g_mesh->addWidget(bar_mesh_extract_);
     root->addWidget(grp_mesh);
@@ -100,7 +101,7 @@ void MetricsPanel::setupUI() {
     bar_export_ = new QProgressBar(this);
     bar_export_->setRange(0, 100);
     bar_export_->setValue(0);
-    bar_export_->setFixedHeight(8);
+    bar_export_->setFixedHeight(uiThinBarHeight(*this));
     bar_export_->setTextVisible(false);
     g_export->addWidget(bar_export_);
     root->addWidget(grp_export);
@@ -127,10 +128,10 @@ void MetricsPanel::update(const app::PipelineMetrics& m) {
 
     if (m.tracking_ok) {
         lbl_tracking_status_->setText("OK");
-        lbl_tracking_status_->setStyleSheet("color: #4f4; font-family: monospace; font-size: 11px;");
+        lbl_tracking_status_->setStyleSheet("color: #4f4; font-family: monospace; font-size: 9pt;");
     } else {
         lbl_tracking_status_->setText("LOST");
-        lbl_tracking_status_->setStyleSheet("color: #f44; font-family: monospace; font-size: 11px;");
+        lbl_tracking_status_->setStyleSheet("color: #f44; font-family: monospace; font-size: 9pt;");
     }
 
     QString state_str;

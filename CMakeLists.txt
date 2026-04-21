@@ -40,11 +40,13 @@ if(CMAKE_CUDA_COMPILER)
     set(CUDA_AVAILABLE TRUE)
     add_compile_definitions(CUDA_ENABLED)
     set(CMAKE_CUDA_STANDARD 17)
-    
-    # Target architectures: 86 (Ampere), 89 (Ada), 100 (Blackwell/RTX 50-series)
-    # Using 'native' if available (CMake 3.24+) or a sensible default list
-    set(CMAKE_CUDA_ARCHITECTURES 86 89 100) 
-    
+
+    find_package(CUDAToolkit REQUIRED)
+
+    # CMake may default CMAKE_CUDA_ARCHITECTURES to a stale arch when no GPU is visible at configure time.
+    set(KINECT_CUDA_ARCH "120" CACHE STRING "CUDA real arch(s) for nvcc, e.g. 120 for RTX 5070, or 86;120 for multiple GPUs")
+    set(CMAKE_CUDA_ARCHITECTURES "${KINECT_CUDA_ARCH}")
+
     message(STATUS "CUDA found: ${CMAKE_CUDA_COMPILER} (Archs: ${CMAKE_CUDA_ARCHITECTURES})")
 else()
     set(CUDA_AVAILABLE FALSE)
@@ -170,9 +172,11 @@ target_link_libraries(KinectFusionQt PRIVATE
 )
 
 if(CUDA_AVAILABLE)
-    target_link_libraries(KinectFusionQt PRIVATE cuda cudart)
+    target_link_libraries(KinectFusionQt PRIVATE CUDA::cudart)
+    target_include_directories(KinectFusionQt PRIVATE "${CUDAToolkit_INCLUDE_DIRS}")
     target_compile_options(KinectFusionQt PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:
+            --extended-lambda
             --expt-relaxed-constexpr
             -diag-suppress=20012
             -diag-suppress=20015

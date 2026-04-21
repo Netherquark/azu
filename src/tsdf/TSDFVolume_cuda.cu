@@ -1,15 +1,14 @@
 #ifdef CUDA_ENABLED
 
+#include "tsdf/VoxelGPU.h"
 #include "tsdf/TSDFVolume.h"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
-#include <iostream>
 #include <cstring>
+#include <iostream>
 
 namespace kfusion {
 namespace tsdf {
-
-#include "tsdf/VoxelGPU.h"
 
 // -------------------------------------------------------------------
 // Integration kernel: Image-Centric (Pixel Parallel)
@@ -143,7 +142,7 @@ void TSDFVolume::freeGPU() {
 void TSDFVolume::initGPU() {
     const int res = params_.resolution;
     size_t n = static_cast<size_t>(res) * static_cast<size_t>(res) * static_cast<size_t>(res);
-    d_voxels_ = utils::make_cuda_unique<void>(n * sizeof(VoxelGPU));
+    d_voxels_ = utils::make_cuda_unique<uint8_t>(n * sizeof(VoxelGPU));
     d_depth_  = utils::make_cuda_unique<float>(640 * 480);
     d_rgb_    = utils::make_cuda_unique<uint8_t>(640 * 480 * 3);
     gpu_valid_ = true;
@@ -241,9 +240,9 @@ __device__ float3 computeNormalGPU(void* voxels_void, int resolution, int x, int
 __global__ void raycastKernel(
     void* voxels_void, int resolution, float voxel_size, float3 origin,
     float fx, float fy, float cx, float cy,
-    float r00, float r01, float r02, float tx,
-    float r10, float r11, float r12, float ty,
-    float r20, float r21, float r22, float tz,
+    float r00, float r01, float r02, float trans_x,
+    float r10, float r11, float r12, float trans_y,
+    float r20, float r21, float r22, float trans_z,
     int width, int height,
     float3* out_v, float3* out_n)
 {
@@ -270,33 +269,33 @@ __global__ void raycastKernel(
     ray_w.y = r10 * ray_c.x + r11 * ray_c.y + r12 * ray_c.z;
     ray_w.z = r20 * ray_c.x + r21 * ray_c.y + r22 * ray_c.z;
 
-    float3 pos_w = make_float3(tx, ty, tz);
-    float t = 0.4f; // min depth
+    float3 pos_w = make_float3(trans_x, trans_y, trans_z);
+    float t_ray = 0.4f; // min depth along ray
     float prev_val = 1.0f;
 
     for (int i = 0; i < 400; ++i) { // max steps
-        float3 p = make_float3(pos_w.x + ray_w.x * t, pos_w.y + ray_w.y * t, pos_w.z + ray_w.z * t);
+        float3 p = make_float3(pos_w.x + ray_w.x * t_ray, pos_w.y + ray_w.y * t_ray, pos_w.z + ray_w.z * t_ray);
         int vx = (int)((p.x - origin.x) / voxel_size);
         int vy = (int)((p.y - origin.y) / voxel_size);
         int vz = (int)((p.z - origin.z) / voxel_size);
 
         if (vx < 0 || vx >= resolution || vy < 0 || vy >= resolution || vz < 0 || vz >= resolution) {
-            t += voxel_size;
+            t_ray += voxel_size;
             continue;
         }
 
         float val = get_tsdf(vx, vy, vz);
         if (prev_val > 0 && val < 0) {
             // Surface found
-            float t_fine = t - voxel_size * (val / (val - prev_val));
+            float t_fine = t_ray - voxel_size * (val / (val - prev_val));
             float3 pf = make_float3(pos_w.x + ray_w.x * t_fine, pos_w.y + ray_w.y * t_fine, pos_w.z + ray_w.z * t_fine);
             
             // Transform back to camera space for the output vertex map
             // cam = R^T (world - t)
             float3 pc;
-            pc.x = r00 * (pf.x - tx) + r10 * (pf.y - ty) + r20 * (pf.z - tz);
-            pc.y = r01 * (pf.x - tx) + r11 * (pf.y - ty) + r21 * (pf.z - tz);
-            pc.z = r02 * (pf.x - tx) + r12 * (pf.y - ty) + r22 * (pf.z - tz);
+            pc.x = r00 * (pf.x - trans_x) + r10 * (pf.y - trans_y) + r20 * (pf.z - trans_z);
+            pc.y = r01 * (pf.x - trans_x) + r11 * (pf.y - trans_y) + r21 * (pf.z - trans_z);
+            pc.z = r02 * (pf.x - trans_x) + r12 * (pf.y - trans_y) + r22 * (pf.z - trans_z);
             
             out_v[py * width + px] = pc;
             
@@ -310,8 +309,8 @@ __global__ void raycastKernel(
             return;
         }
         prev_val = val;
-        t += fmaxf(voxel_size, val * 0.1f); // skipping
-        if (t > 5.0f) break;
+        t_ray += fmaxf(voxel_size, val * 0.1f); // skipping
+        if (t_ray > 5.0f) break;
     }
     out_v[py * width + px] = make_float3(0,0,0);
     out_n[py * width + px] = make_float3(0,0,0);

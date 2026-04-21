@@ -252,9 +252,14 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
     // For now, we sync if host pointers are provided.
     // In realistic scenarios, ICP will call raycastGPU directly.
     static float3 *d_v = nullptr, *d_n = nullptr;
-    if (!d_v) {
-        cudaMalloc(&d_v, width * height * sizeof(float3));
-        cudaMalloc(&d_n, width * height * sizeof(float3));
+    static int alloc_pixels = 0;
+    const int n_pix = width * height;
+    if (n_pix > alloc_pixels) {
+        if (d_v) cudaFree(d_v);
+        if (d_n) cudaFree(d_n);
+        cudaMalloc(&d_v, static_cast<size_t>(n_pix) * sizeof(float3));
+        cudaMalloc(&d_n, static_cast<size_t>(n_pix) * sizeof(float3));
+        alloc_pixels = n_pix;
     }
     const_cast<TSDFVolume*>(this)->raycastGPU(pose, fx, fy, cx, cy, width, height, d_v, d_n);
     cudaMemcpy(vertices_out, d_v, width * height * sizeof(float3), cudaMemcpyDeviceToHost);

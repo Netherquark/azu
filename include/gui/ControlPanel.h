@@ -37,6 +37,10 @@ public slots:
     void onPipelineStopped();
     void setExportEnabled(bool enabled);
 
+private slots:
+    void forwardExportPLY();
+    void forwardExportGLB();
+
 private:
     QPushButton* btn_start_  = nullptr;
     QPushButton* btn_stop_   = nullptr;

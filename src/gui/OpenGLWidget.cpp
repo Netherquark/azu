@@ -1,4 +1,6 @@
 #include "gui/OpenGLWidget.h"
+#include "gui/UiScale.h"
+#include <QFontMetrics>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QSurfaceFormat>
@@ -16,7 +18,9 @@ OpenGLWidget::OpenGLWidget(QWidget* parent)
     fmt.setSamples(4);
     setFormat(fmt);
 
-    setMinimumSize(640, 480);
+    const int cw = uiCharAdvance(*this);
+    const int mh = QFontMetrics(font()).height();
+    setMinimumSize(qMax(320, cw * 40), qMax(240, mh * 14));
 }
 
 OpenGLWidget::~OpenGLWidget() {

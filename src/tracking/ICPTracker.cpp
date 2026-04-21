@@ -250,9 +250,9 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
     return inlier_count > 0;
 }
 
-} // namespace tracking
-} // namespace kfusion
 #ifdef CUDA_ENABLED
+#include <cuda_runtime.h>
+
 ICPResult ICPTracker::trackGPU(const sensor::FramePyramid& live,
                                const ModelFrame&           model,
                                const Eigen::Matrix4f&      pose_estimate)
@@ -298,3 +298,6 @@ ICPResult ICPTracker::trackGPU(const sensor::FramePyramid& live,
     return result;
 }
 #endif
+
+} // namespace tracking
+} // namespace kfusion

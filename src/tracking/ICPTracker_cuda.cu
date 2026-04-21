@@ -1,6 +1,7 @@
 #ifdef CUDA_ENABLED
 
 #include "tracking/ICPTracker.h"
+#include "sensor/KinectSensor.h"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <iostream>
@@ -119,10 +120,12 @@ __global__ void computeHessianKernel(
     __shared__ int   s_inliers;
 
     int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    if (tid < 21) s_A[tid] = 0;
-    if (tid < 6)  s_b[tid] = 0;
-    if (tid == 27) s_res = 0;
-    if (tid == 28) s_inliers = 0;
+    if (tid == 0) {
+        for (int i = 0; i < 21; ++i) s_A[i] = 0;
+        for (int i = 0; i < 6; ++i) s_b[i] = 0;
+        s_res     = 0;
+        s_inliers = 0;
+    }
     __syncthreads();
 
     // Sum within block using atomics to shared memory
@@ -146,12 +149,11 @@ __global__ void computeHessianKernel(
 // ---------------------------------------------------------------------------
 
 void ICPTracker::initGPU() {
-    cudaMalloc(&d_hessian_, 32 * sizeof(float)); // 29 used
+    d_hessian_ = utils::make_cuda_unique<float>(32);
 }
 
 void ICPTracker::freeGPU() {
-    if (d_hessian_) cudaFree(d_hessian_);
-    d_hessian_ = nullptr;
+    d_hessian_.reset();
 }
 
 ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
@@ -176,7 +178,7 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
     float angle_thresh_cos = cosf(params_.angle_threshold * 3.14159f / 180.0f);
 
     for (int iter = 0; iter < max_iter; ++iter) {
-        cudaMemset(d_hessian_, 0, 32 * sizeof(float));
+        cudaMemset(d_hessian_.get(), 0, 32 * sizeof(float));
 
         Eigen::Matrix4f rel = ref_pose.inverse() * result.pose;
         Eigen::Matrix3f R = rel.block<3,3>(0,0);
@@ -187,7 +189,7 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
 
         computeHessianKernel<<<grid, block>>>(
             d_v_live, d_n_live, 
-            model.d_vertices, model.d_normals,
+            model.d_vertices.get(), model.d_normals.get(),
             width, height,
             model.width, model.height,
             fx, fy, cx, cy,
@@ -196,11 +198,11 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
             R(1,0), R(1,1), R(1,2),
             R(2,0), R(2,1), R(2,2),
             t.x(), t.y(), t.z(),
-            d_hessian_
+            d_hessian_.get()
         );
 
         float h_hessian[32];
-        cudaMemcpy(h_hessian, d_hessian_, 32 * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_hessian, d_hessian_.get(), 32 * sizeof(float), cudaMemcpyDeviceToHost);
 
         Eigen::Matrix<float,6,6> A = Eigen::Matrix<float,6,6>::Zero();
         Eigen::Matrix<float,6,1> b = Eigen::Matrix<float,6,1>::Zero();

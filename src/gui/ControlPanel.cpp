@@ -1,4 +1,5 @@
 #include "gui/ControlPanel.h"
+#include "gui/UiScale.h"
 #include <QPushButton>
 #include <QComboBox>
 #include <QSpinBox>
@@ -39,7 +40,7 @@ void ControlPanel::setupUI() {
     root->setContentsMargins(6, 6, 6, 6);
 
     lbl_status_ = new QLabel("Status: Idle", this);
-    lbl_status_->setStyleSheet("color: #aaa; font-size: 11px;");
+    lbl_status_->setStyleSheet("color: #aaa; font-size: 9pt;");
     root->addWidget(lbl_status_);
 
     auto* line = new QFrame(this);
@@ -52,9 +53,9 @@ void ControlPanel::setupUI() {
     btn_start_ = new QPushButton("▶  Start Capture", this);
     btn_stop_  = new QPushButton("■  Stop Capture",  this);
     btn_reset_ = new QPushButton("↺  Reset Scan",    this);
-    btn_start_->setStyleSheet("QPushButton { background: #2a7a2a; color: white; padding: 5px; border-radius: 4px; }");
-    btn_stop_ ->setStyleSheet("QPushButton { background: #7a2a2a; color: white; padding: 5px; border-radius: 4px; }");
-    btn_reset_->setStyleSheet("QPushButton { background: #444; color: white; padding: 5px; border-radius: 4px; }");
+    btn_start_->setStyleSheet("QPushButton { background: #2a7a2a; color: white; padding: 0.35em 0.5em; border-radius: 4px; font-size: 9pt; }");
+    btn_stop_ ->setStyleSheet("QPushButton { background: #7a2a2a; color: white; padding: 0.35em 0.5em; border-radius: 4px; font-size: 9pt; }");
+    btn_reset_->setStyleSheet("QPushButton { background: #444; color: white; padding: 0.35em 0.5em; border-radius: 4px; font-size: 9pt; }");
     btn_stop_->setEnabled(false);
     v_cap->addWidget(btn_start_);
     v_cap->addWidget(btn_stop_);
@@ -138,7 +139,7 @@ void ControlPanel::setupUI() {
     g->addWidget(spin_icp_it0_, r++, 1);
 
     btn_apply_hyper_ = new QPushButton("Apply hyperparameters", grp_hp);
-    btn_apply_hyper_->setStyleSheet("QPushButton { background: #3a5a7a; color: white; padding: 5px; border-radius: 4px; }");
+    btn_apply_hyper_->setStyleSheet("QPushButton { background: #3a5a7a; color: white; padding: 0.35em 0.5em; border-radius: 4px; font-size: 9pt; }");
     g->addWidget(btn_apply_hyper_, r++, 0, 1, 2);
 
     inner_layout->addWidget(grp_hp);
@@ -155,8 +156,8 @@ void ControlPanel::setupUI() {
     auto* v_exp = new QVBoxLayout(grp_export);
     btn_ply_ = new QPushButton("Export PLY", grp_export);
     btn_glb_ = new QPushButton("Export GLB (Unity)", grp_export);
-    btn_ply_->setStyleSheet("QPushButton { background: #2a4a7a; color: white; padding: 5px; border-radius: 4px; }");
-    btn_glb_->setStyleSheet("QPushButton { background: #4a2a7a; color: white; padding: 5px; border-radius: 4px; }");
+    btn_ply_->setStyleSheet("QPushButton { background: #2a4a7a; color: white; padding: 0.35em 0.5em; border-radius: 4px; font-size: 9pt; }");
+    btn_glb_->setStyleSheet("QPushButton { background: #4a2a7a; color: white; padding: 0.35em 0.5em; border-radius: 4px; font-size: 9pt; }");
     btn_ply_->setEnabled(false);
     btn_glb_->setEnabled(false);
     v_exp->addWidget(btn_ply_);
@@ -175,16 +176,15 @@ void ControlPanel::setupUI() {
     scroll->setWidget(inner);
     root->addWidget(scroll, 1);
 
-    setMinimumWidth(268);
-    setMaximumWidth(320);
+    setPanelWidthInChars(*this, 17, 22);
 }
 
 void ControlPanel::connectSignals() {
     connect(btn_start_, &QPushButton::clicked, this, &ControlPanel::startClicked);
     connect(btn_stop_,  &QPushButton::clicked, this, &ControlPanel::stopClicked);
     connect(btn_reset_, &QPushButton::clicked, this, &ControlPanel::resetClicked);
-    connect(btn_ply_,   &QPushButton::clicked, this, &ControlPanel::exportPLYClicked);
-    connect(btn_glb_,   &QPushButton::clicked, this, &ControlPanel::exportGLBClicked);
+    connect(btn_ply_,   &QPushButton::clicked, this, &ControlPanel::forwardExportPLY);
+    connect(btn_glb_,   &QPushButton::clicked, this, &ControlPanel::forwardExportGLB);
     connect(combo_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ControlPanel::modeChanged);
     connect(spin_threads_, QOverload<int>::of(&QSpinBox::valueChanged),
@@ -233,19 +233,29 @@ void ControlPanel::onPipelineStarted() {
     btn_start_->setEnabled(false);
     btn_stop_->setEnabled(true);
     lbl_status_->setText("Status: Running");
-    lbl_status_->setStyleSheet("color: #4f4; font-size: 11px;");
+    lbl_status_->setStyleSheet("color: #4f4; font-size: 9pt;");
+    // Allow export during capture; PipelineController::export* waits for mesh if needed.
+    setExportEnabled(true);
 }
 
 void ControlPanel::onPipelineStopped() {
     btn_start_->setEnabled(true);
     btn_stop_->setEnabled(false);
     lbl_status_->setText("Status: Stopped");
-    lbl_status_->setStyleSheet("color: #fa4; font-size: 11px;");
+    lbl_status_->setStyleSheet("color: #fa4; font-size: 9pt;");
 }
 
 void ControlPanel::setExportEnabled(bool enabled) {
     btn_ply_->setEnabled(enabled);
     btn_glb_->setEnabled(enabled);
+}
+
+void ControlPanel::forwardExportPLY() {
+    emit exportPLYClicked();
+}
+
+void ControlPanel::forwardExportGLB() {
+    emit exportGLBClicked();
 }
 
 } // namespace gui

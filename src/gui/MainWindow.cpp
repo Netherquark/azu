@@ -9,8 +9,11 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QCloseEvent>
-#include <QStatusBar>
+#include <QGuiApplication>
 #include <QLabel>
+#include <QScreen>
+#include <QSize>
+#include <QStatusBar>
 
 namespace kfusion {
 namespace gui {
@@ -19,17 +22,28 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
     setWindowTitle("KinectFusionQt");
-    resize(1280, 720);
+
+    if (QScreen* scr = QGuiApplication::primaryScreen()) {
+        const QRect avail = scr->availableGeometry();
+        QSize s         = (avail.size() * 4) / 5;
+        s               = s.boundedTo(QSize(1920, 1080));
+        s               = s.expandedTo(QSize(960, 540));
+        resize(s);
+        const QPoint c = avail.center();
+        move(c.x() - width() / 2, c.y() - height() / 2);
+    } else {
+        resize(1280, 720);
+    }
 
     setStyleSheet(R"css(
         QMainWindow, QWidget { background-color: #1e1f24; color: #ddd; }
         QGroupBox { border: 1px solid #444; border-radius: 4px; margin-top: 8px; padding-top: 6px; }
-        QGroupBox::title { subcontrol-origin: margin; left: 8px; color: #aaa; }
+        QGroupBox::title { subcontrol-origin: margin; left: 8px; color: #aaa; font-size: 9pt; }
         QProgressBar { border: 1px solid #555; border-radius: 3px; background: #333; }
         QProgressBar::chunk { background: #3a7fcf; border-radius: 2px; }
-        QComboBox { background: #333; border: 1px solid #555; border-radius: 3px; padding: 3px; }
-        QLabel { color: #ccc; }
-        QStatusBar { background: #16171c; color: #aaa; }
+        QComboBox { background: #333; border: 1px solid #555; border-radius: 3px; padding: 3px; font-size: 9pt; }
+        QLabel { color: #ccc; font-size: 9pt; }
+        QStatusBar { background: #16171c; color: #aaa; font-size: 9pt; }
     )css");
 
     pipeline_ = std::make_unique<app::PipelineController>();

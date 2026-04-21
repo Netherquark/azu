@@ -186,7 +186,7 @@ Scale is **1 unit = 1 metre** throughout.
 | Tracking immediately lost | Ensure scene has enough texture/geometry; reduce motion speed |
 | Low FPS | Disable CUDA if GPU init fails; ensure Release build |
 | GLB doesn't import to Unity | Ensure Unity 2019.4+ which includes built-in GLTF support, or use GLTFast package |
-| CUDA build fails | Check `nvcc --version`; set `CMAKE_CUDA_ARCHITECTURES=86` for RTX 5070 |
+| CUDA build fails / wrong GPU arch | Ensure `nvcc` is on `PATH`; RTX 50-series needs sm_120: `cmake -DKINECT_CUDA_ARCH=120 ..` (or `-DCMAKE_CUDA_ARCHITECTURES=120`). Link errors for `cuda_runtime.h` require `CUDA::cudart` (handled by this project’s CMake when CUDA is enabled). |
 
 ---
 

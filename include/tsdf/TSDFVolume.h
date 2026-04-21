@@ -75,6 +75,18 @@ public:
     // Voxel data for mesh extraction (read-only)
     const std::vector<Voxel>& voxelData() const { return voxels_; }
 
+#ifdef CUDA_ENABLED
+    /** Raw device pointer to voxel buffer (for CUDA kernels / mesh extraction). */
+    void* getGPUVoxels() const { return static_cast<void*>(d_voxels_.get()); }
+
+    void initGPU();
+    void freeGPU();
+    void raycastGPU(const Eigen::Matrix4f& pose,
+                    float fx, float fy, float cx, float cy,
+                    int width, int height,
+                    float3* d_vertices, float3* d_normals);
+#endif
+
     // Convert world position to voxel index
     Eigen::Vector3i worldToVoxel(const Eigen::Vector3f& world) const;
     Eigen::Vector3f voxelToWorld(const Eigen::Vector3i& voxel) const;
@@ -110,14 +122,11 @@ private:
 
 #ifdef CUDA_ENABLED
     // GPU state
-    utils::CudaUniquePtr<void> d_voxels_; // Managed as void since it's passed to kernels
+    utils::CudaUniquePtr<uint8_t> d_voxels_; // n * sizeof(VoxelGPU) bytes
     utils::CudaUniquePtr<float> d_depth_;
     utils::CudaUniquePtr<uint8_t> d_rgb_;
     bool    gpu_valid_ = false;
 
-    void* getGPUVoxels() const { return d_voxels_.get(); }
-    void initGPU();
-    void freeGPU();
     void syncToGPU();
     void syncFromGPU();
     void integrateGPU(const float* depth_meters,
@@ -126,10 +135,6 @@ private:
                       float fx, float fy, 
                       float cx, float cy,
                       int width, int height);
-    void raycastGPU(const Eigen::Matrix4f& pose,
-                    float fx, float fy, float cx, float cy,
-                    int width, int height,
-                    float3* d_vertices, float3* d_normals);
 #endif
 };
 
