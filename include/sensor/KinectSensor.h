@@ -18,12 +18,6 @@ static constexpr int DEPTH_HEIGHT = 480;
 static constexpr int RGB_WIDTH    = 640;
 static constexpr int RGB_HEIGHT   = 480;
 
-// Kinect v1 intrinsics
-static constexpr double FX = 525.0;
-static constexpr double FY = 525.0;
-static constexpr double CX = 319.5;
-static constexpr double CY = 239.5;
-
 // Convert raw 11-bit depth to meters
 inline float rawDepthToMeters(uint16_t raw) {
     if (raw == 0 || raw >= 2047) return 0.0f;

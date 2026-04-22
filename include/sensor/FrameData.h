@@ -10,6 +10,12 @@ namespace sensor {
 static constexpr int FRAME_W = 640;
 static constexpr int FRAME_H = 480;
 
+// Kinect v1 Intrinsics
+static constexpr float FX = 525.0f;
+static constexpr float FY = 525.0f;
+static constexpr float CX = 319.5f;
+static constexpr float CY = 239.5f;
+
 // Processed depth frame: per-pixel 3D vertex + normal + valid flag
 struct FrameData {
     // vertices[y*W+x] = 3D point in camera space (meters). (0,0,0) = invalid

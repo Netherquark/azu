@@ -42,8 +42,10 @@ if(CMAKE_CUDA_COMPILER)
     set(CMAKE_CUDA_STANDARD 17)
     
     # Target architectures: 86 (Ampere), 89 (Ada), 100 (Blackwell/RTX 50-series)
-    # Using 'native' if available (CMake 3.24+) or a sensible default list
     set(CMAKE_CUDA_ARCHITECTURES 86 89 100) 
+    
+    # Modern CUDA detection for include paths
+    find_package(CUDAToolkit REQUIRED)
     
     message(STATUS "CUDA found: ${CMAKE_CUDA_COMPILER} (Archs: ${CMAKE_CUDA_ARCHITECTURES})")
 else()
@@ -159,6 +161,10 @@ target_include_directories(KinectFusionQt PRIVATE
     ${EIGEN3_INCLUDE_DIR}
     ${FREENECT_INCLUDE_DIRS}
 )
+
+if(CUDA_AVAILABLE)
+    target_include_directories(KinectFusionQt PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+endif()
 
 # Link Libraries
 target_link_libraries(KinectFusionQt PRIVATE

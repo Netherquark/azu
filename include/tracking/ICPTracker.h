@@ -59,6 +59,8 @@ public:
     ICPResult trackGPU(const sensor::FramePyramid& live,
                        const ModelFrame&           model,
                        const Eigen::Matrix4f&      pose_estimate);
+    void initGPU();
+    void freeGPU();
 #endif
 
     const ICPParams& params() const { return params_; }
@@ -84,8 +86,6 @@ private:
     utils::CudaUniquePtr<float3> d_pyramid_v[sensor::FramePyramid::LEVELS];
     utils::CudaUniquePtr<float3> d_pyramid_n[sensor::FramePyramid::LEVELS];
     
-    void initGPU();
-
     ICPResult trackLevelGPU(const float3*            d_v_live,
                             const float3*            d_n_live,
                             int                      width,

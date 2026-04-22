@@ -5,11 +5,10 @@
 #include <device_launch_parameters.h>
 #include <iostream>
 #include <cstring>
+#include "tsdf/VoxelGPU.h"
 
 namespace kfusion {
 namespace tsdf {
-
-#include "tsdf/VoxelGPU.h"
 
 // -------------------------------------------------------------------
 // Integration kernel: Image-Centric (Pixel Parallel)
@@ -143,7 +142,7 @@ void TSDFVolume::freeGPU() {
 void TSDFVolume::initGPU() {
     const int res = params_.resolution;
     size_t n = static_cast<size_t>(res) * static_cast<size_t>(res) * static_cast<size_t>(res);
-    d_voxels_ = utils::make_cuda_unique<void>(n * sizeof(VoxelGPU));
+    d_voxels_ = utils::make_cuda_unique<VoxelGPU>(n);
     d_depth_  = utils::make_cuda_unique<float>(640 * 480);
     d_rgb_    = utils::make_cuda_unique<uint8_t>(640 * 480 * 3);
     gpu_valid_ = true;

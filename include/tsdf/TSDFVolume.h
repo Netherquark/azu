@@ -6,6 +6,7 @@
 #include <atomic>
 #include <shared_mutex>
 #include "utils/CudaUniquePtr.h"
+#include "tsdf/VoxelGPU.h"
 
 namespace kfusion {
 namespace tsdf {
@@ -69,7 +70,7 @@ public:
     // Volume usage: fraction of voxels with weight > 0
     float usageFraction() const;
 
-    // Integrated frame count
+    // integrated frame count
     int integratedFrames() const { return integrated_frames_.load(); }
 
     // Voxel data for mesh extraction (read-only)
@@ -77,8 +78,27 @@ public:
 
     // Convert world position to voxel index
     Eigen::Vector3i worldToVoxel(const Eigen::Vector3f& world) const;
-    Eigen::Vector3f voxelToWorld(const Eigen::Vector3i& voxel) const;
+    Eigen::Vector3f voxelToWorld(const Eigen::Vector3i& v) const;
     Eigen::Vector3f voxelToWorld(int x, int y, int z) const;
+
+#ifdef CUDA_ENABLED
+    void initGPU();
+    void freeGPU();
+    void syncToGPU();
+    void syncFromGPU();
+    void integrateGPU(const float* depth_meters,
+                      const uint8_t* rgb,
+                      const Eigen::Matrix4f& pose,
+                      float fx, float fy, 
+                      float cx, float cy,
+                      int width, int height);
+    void raycastGPU(const Eigen::Matrix4f& pose,
+                    float fx, float fy, float cx, float cy,
+                    int width, int height,
+                    float3* d_vertices, float3* d_normals);
+
+    void* getGPUVoxels() const { return (void*)d_voxels_.get(); }
+#endif
 
 private:
     TSDFParams           params_;
@@ -110,26 +130,10 @@ private:
 
 #ifdef CUDA_ENABLED
     // GPU state
-    utils::CudaUniquePtr<void> d_voxels_; // Managed as void since it's passed to kernels
+    utils::CudaUniquePtr<VoxelGPU> d_voxels_; 
     utils::CudaUniquePtr<float> d_depth_;
     utils::CudaUniquePtr<uint8_t> d_rgb_;
     bool    gpu_valid_ = false;
-
-    void* getGPUVoxels() const { return d_voxels_.get(); }
-    void initGPU();
-    void freeGPU();
-    void syncToGPU();
-    void syncFromGPU();
-    void integrateGPU(const float* depth_meters,
-                      const uint8_t* rgb,
-                      const Eigen::Matrix4f& pose,
-                      float fx, float fy, 
-                      float cx, float cy,
-                      int width, int height);
-    void raycastGPU(const Eigen::Matrix4f& pose,
-                    float fx, float fy, float cx, float cy,
-                    int width, int height,
-                    float3* d_vertices, float3* d_normals);
 #endif
 };
 
