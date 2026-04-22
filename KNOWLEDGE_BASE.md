@@ -57,7 +57,9 @@ The system orchestrates four primary threads managed by `PipelineController`:
 - **Key Functions**:
     - `track()`: Multiresolution entry point. Processes coarse-to-fine pyramids.
     - `trackLevel()`: Executes Point-to-Plane ICP iterations at a specific pyramid level.
-    - `buildLinearSystem()`: **Pose-Aware Correspondence**. Projects live points through the previous pose and finds closest points in the raycasted model. Constructs the $6 \times 6$ Gauss-Newton Hessian.
+    - `buildLinearSystem()`: **Pose-Aware Correspondence**. Projects live points through the previous pose and finds closest points in the raycasted model. Constructs the $6 \times 6$ Gauss-Newton Hessian. Now populates **Diagnostic Counters** (valid live/model points, projections, and filtered counts) for granular tracking failure analysis.
+- **Tracking Statistics**:
+    - `ICPResult` now includes `valid_live_points`, `valid_model_points`, `projected_points`, `dist_filtered`, and `angle_filtered` to distinguish between sensor blackout, occlusion, or volume-limit rejections.
 - **Optimization**: All inner loops are parallelized using `OpenMP` for real-time tracking (30ms budget for CPU).
 
 #### ICPTracker_cuda.cu
@@ -66,7 +68,7 @@ The system orchestrates four primary threads managed by `PipelineController`:
     - `computeHessianKernel`: Performs pose-aware point-to-plane correspondence and Jacobian accumulation in a single pass.
     - `reduceHessianKernel`: Block-based reduction for the $6 \times 6$ linear system.
     - `downsampleKernel`: GPU-based pyramid generation.
-- **Optimization**: Replaces the $O(N)$ CPU reduction with $O(\log N)$ parallel reduction.
+- **Optimization**: Replaces the $O(N)$ CPU reduction with $O(\log N)$ parallel reduction. Uses shared memory and atomic operations for diagnostic counter accumulation.
 
 ---
 
@@ -130,6 +132,7 @@ The system orchestrates four primary threads managed by `PipelineController`:
 - **The Orchestrator**: Contains the loop logic for all pipeline threads.
 - Handles the state machine: `Idle` -> `Running` -> `TrackingLost` -> `Error`.
 - Manages inter-thread communication via `std::queue` and `std::condition_variable`.
+- **Diagnostic Logging**: Implements structured failure logging in the tracking loop. When `--verbose` is enabled, outputs a detailed breakdown of point-matching performance to help identify sensor vs. geometry issues.
 
 #### MainWindow.h
 - Qt5-based main window.

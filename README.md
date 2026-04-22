@@ -102,7 +102,7 @@ make -j$(nproc)
 ## Usage
 
 1. **Connect Kinect v1** via USB before launching the application.
-2. Launch the scanner: `./KinectFusionQt` (from the `build` directory).
+2. Launch the scanner: `QT_QPA_PLATFORM=xcb ./KinectFusionQt --verbose` (from the `build` directory).
 3. Click **▶ Start Capture** — the pipeline will begin live tracking and volume integration.
 4. **Scan**: Move the Kinect slowly and steadily around your target object.
 5. **View**: Toggle between **Point Cloud** and **Mesh** modes to inspect quality in real-time.
@@ -113,7 +113,8 @@ make -j$(nproc)
 - **Range**: Maintain a distance of 0.5m to 2.5m for optimal depth precision.
 - **Lighting**: Ensure consistent, non-flickering lighting for robust RGB-based ICP tracking.
 - **Volume**: The default reconstruction cube is 2.56m. You can adjust the `origin` and `voxel_size` in `include/tsdf/TSDFVolume.h` for smaller objects (e.g., set `voxel_size` to 0.005 for 5mm precision).
-- **Reset**: If tracking is lost (indicated in the status panel), click **Reset** to clear the volume and start a new scan.
+- **Tracking Lost**: If tracking is lost (indicated in the status panel), click **Reset** to clear the volume and start a new scan.
+- **Diagnostics**: Start with `--verbose` to see a detailed breakdown of tracking failures (correspondences, projections, filtering).
 
 ---
 
@@ -183,7 +184,7 @@ Scale is **1 unit = 1 metre** throughout.
 |---|---|
 | "No Kinect devices found" | Check udev rules; run `lsusb` to confirm device visible |
 | Permission denied on USB | Add user to `plugdev`; re-login |
-| Tracking immediately lost | Ensure scene has enough texture/geometry; reduce motion speed |
+| Tracking immediately lost | Ensure scene has enough texture/geometry; reduce motion speed; **Check `--verbose` logs for `inliers` and `model_pts`** |
 | Low FPS | Disable CUDA if GPU init fails; ensure Release build |
 | GLB doesn't import to Unity | Ensure Unity 2019.4+ which includes built-in GLTF support, or use GLTFast package |
 | CUDA build fails | Check `nvcc --version`; set `CMAKE_CUDA_ARCHITECTURES=86` for RTX 5070 |

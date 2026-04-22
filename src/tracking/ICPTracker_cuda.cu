@@ -29,7 +29,7 @@ __global__ void computeHessianKernel(
     float r10, float r11, float r12,
     float r20, float r21, float r22,
     float tx,  float ty,  float tz,
-    // Output: 21 (A) + 6 (b) + 1 (res) + 1 (inliers) = 29 floats
+    // Output: 21 (A) + 6 (b) + 1 (res) + 1 (inliers) + 5 (diagnostics) = 34 floats
     float* global_stats)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -39,6 +39,11 @@ __global__ void computeHessianKernel(
     float local_b[6]  = {0};
     float local_res   = 0;
     int   local_inliers = 0;
+    int   local_valid_live = 0;
+    int   local_valid_model = 0;
+    int   local_projected = 0;
+    int   local_dist_filtered = 0;
+    int   local_angle_filtered = 0;
 
     if (x < width && y < height) {
         int idx = y * width + x;
@@ -52,16 +57,19 @@ __global__ void computeHessianKernel(
             v_ref.z = r20 * v_live.x + r21 * v_live.y + r22 * v_live.z + tz;
 
             if (v_ref.z > 0.001f) {
+                local_valid_live++;
                 // Project into reference model
                 int mx = __float2int_rd(fx * v_ref.x / v_ref.z + cx + 0.5f);
                 int my = __float2int_rd(fy * v_ref.y / v_ref.z + cy + 0.5f);
 
                 if (mx >= 0 && mx < model_w && my >= 0 && my < model_h) {
+                    local_projected++;
                     int midx = my * model_w + mx;
                     float3 v_model = model_vertices[midx];
                     float3 n_model = model_normals[midx];
 
                     if (v_model.z > 0.001f && n_model.z != 0) { // simplified validity check
+                        local_valid_model++;
                         // Correspondence checks
                         float dx = v_ref.x - v_model.x;
                         float dy = v_ref.y - v_model.y;
@@ -105,7 +113,11 @@ __global__ void computeHessianKernel(
                                 }
                                 local_res += err * err;
                                 local_inliers++;
+                            } else {
+                                local_angle_filtered++;
                             }
+                        } else {
+                            local_dist_filtered++;
                         }
                     }
                 }
@@ -118,12 +130,22 @@ __global__ void computeHessianKernel(
     __shared__ float s_b[6];
     __shared__ float s_res;
     __shared__ int   s_inliers;
+    __shared__ int   s_valid_live;
+    __shared__ int   s_valid_model;
+    __shared__ int   s_projected;
+    __shared__ int   s_dist_filtered;
+    __shared__ int   s_angle_filtered;
 
     int tid = threadIdx.y * blockDim.x + threadIdx.x;
     if (tid < 21) s_A[tid] = 0;
     if (tid < 6)  s_b[tid] = 0;
-    if (tid == 27) s_res = 0;
-    if (tid == 28) s_inliers = 0;
+    if (tid == 21) s_res = 0;
+    if (tid == 22) s_inliers = 0;
+    if (tid == 23) s_valid_live = 0;
+    if (tid == 24) s_valid_model = 0;
+    if (tid == 25) s_projected = 0;
+    if (tid == 26) s_dist_filtered = 0;
+    if (tid == 27) s_angle_filtered = 0;
     __syncthreads();
 
     // Sum within block using atomics to shared memory
@@ -131,6 +153,11 @@ __global__ void computeHessianKernel(
     for (int i = 0; i < 6; ++i)  atomicAdd(&s_b[i], local_b[i]);
     atomicAdd(&s_res, local_res);
     atomicAdd(&s_inliers, local_inliers);
+    atomicAdd(&s_valid_live, local_valid_live);
+    atomicAdd(&s_valid_model, local_valid_model);
+    atomicAdd(&s_projected, local_projected);
+    atomicAdd(&s_dist_filtered, local_dist_filtered);
+    atomicAdd(&s_angle_filtered, local_angle_filtered);
     __syncthreads();
 
     // One thread per block writes to global
@@ -139,6 +166,11 @@ __global__ void computeHessianKernel(
         for (int i = 0; i < 6; ++i)  atomicAdd(&global_stats[21 + i], s_b[i]);
         atomicAdd(&global_stats[27], s_res);
         atomicAdd(&global_stats[28], (float)s_inliers);
+        atomicAdd(&global_stats[29], (float)s_valid_live);
+        atomicAdd(&global_stats[30], (float)s_valid_model);
+        atomicAdd(&global_stats[31], (float)s_projected);
+        atomicAdd(&global_stats[32], (float)s_dist_filtered);
+        atomicAdd(&global_stats[33], (float)s_angle_filtered);
     }
 }
 
@@ -147,7 +179,7 @@ __global__ void computeHessianKernel(
 // ---------------------------------------------------------------------------
 
 void ICPTracker::initGPU() {
-    d_hessian_ = utils::make_cuda_unique<float>(32); // 29 used
+    d_hessian_ = utils::make_cuda_unique<float>(64); // increased from 32
 }
 
 void ICPTracker::freeGPU() {
@@ -199,8 +231,8 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
             d_hessian_.get()
         );
 
-        float h_hessian[32];
-        cudaMemcpy(h_hessian, d_hessian_.get(), 32 * sizeof(float), cudaMemcpyDeviceToHost);
+        float h_hessian[64];
+        cudaMemcpy(h_hessian, d_hessian_.get(), 64 * sizeof(float), cudaMemcpyDeviceToHost);
 
         Eigen::Matrix<float,6,6> A = Eigen::Matrix<float,6,6>::Zero();
         Eigen::Matrix<float,6,1> b = Eigen::Matrix<float,6,1>::Zero();
@@ -213,6 +245,13 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
         }
         float residual = h_hessian[27];
         int inliers = (int)h_hessian[28];
+        
+        // Populate diagnostics
+        result.valid_live_points  = (int)h_hessian[29];
+        result.valid_model_points = (int)h_hessian[30];
+        result.projected_points   = (int)h_hessian[31];
+        result.dist_filtered      = (int)h_hessian[32];
+        result.angle_filtered     = (int)h_hessian[33];
 
         if (inliers < 10) break;
 

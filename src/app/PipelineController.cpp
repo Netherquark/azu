@@ -329,11 +329,18 @@ void PipelineController::trackingLoop() {
             static int lost_log = 0;
             if (++lost_log % 45 == 1) {
                 std::ostringstream oss;
-                oss << "ICP/tracking failed — no TSDF integration for this frame "
-                    << "(inliers=" << icp_result.inliers
+                oss << "ICP/tracking failed — reason: "
+                    << (icp_result.valid_live_points == 0 ? "NO_LIVE_DEPTH " : "")
+                    << (icp_result.valid_model_points == 0 ? "NO_MODEL_SURFACE " : "")
+                    << (icp_result.inliers == 0 ? "NO_CORRESPONDENCES " : "")
+                    << "\n    [Metrics] inliers=" << icp_result.inliers
                     << " err=" << icp_result.error
                     << " converged=" << (icp_result.converged ? "yes" : "no")
-                    << "). Move device slowly or improve scene geometry.";
+                    << "\n    [Diagnostics] live_pts=" << icp_result.valid_live_points
+                    << " model_pts=" << icp_result.valid_model_points
+                    << " projected=" << icp_result.projected_points
+                    << " dist_fail=" << icp_result.dist_filtered
+                    << " angle_fail=" << icp_result.angle_filtered;
                 KFLOG_WARN("Pipeline", oss.str());
             }
         }
@@ -355,6 +362,17 @@ void PipelineController::trackingLoop() {
                     releaseData(std::move(frame)); // Drop if queue full
             }
             integration_queue_cv_.notify_one();
+
+            // Periodic Health Log (Debug)
+            static int health_log = 0;
+            if (++health_log % 60 == 0) {
+                std::ostringstream oss;
+                oss << "Tracking Healthy: inliers=" << icp_result.inliers
+                    << " err=" << icp_result.error
+                    << " (live_pts=" << icp_result.valid_live_points
+                    << " model_pts=" << icp_result.valid_model_points << ")";
+                KFLOG_DEBUG("Pipeline", oss.str());
+            }
         } else {
             state_.store(PipelineState::TrackingLost);
             releaseData(std::move(frame));

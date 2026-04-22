@@ -23,6 +23,13 @@ struct ICPResult {
     int             inliers     = 0;
     bool            converged   = false;
     bool            tracking_ok = false;
+
+    // Diagnostic counters
+    int             valid_live_points  = 0;
+    int             valid_model_points = 0;
+    int             projected_points   = 0;
+    int             dist_filtered      = 0;
+    int             angle_filtered     = 0;
 };
 
 // Raycasted model points and normals used as reference for ICP
@@ -105,7 +112,12 @@ private:
                            Eigen::Matrix<float,6,6>& A,
                            Eigen::Matrix<float,6,1>& b,
                            float& residual,
-                           int&   inlier_count);
+                           int&   inlier_count,
+                           int&   valid_live,
+                           int&   valid_model,
+                           int&   projected,
+                           int&   dist_filtered,
+                           int&   angle_filtered);
 
     // Project model into current frame space
     void projectModel(const ModelFrame&      model,

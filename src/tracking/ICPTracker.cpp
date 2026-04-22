@@ -55,7 +55,9 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
         float residual    = 0.0f;
         int   inlier_count = 0;
 
-        if (!buildLinearSystem(live_level, model, result.pose, ref_pose, A, b, residual, inlier_count))
+        if (!buildLinearSystem(live_level, model, result.pose, ref_pose, A, b, residual, inlier_count,
+                               result.valid_live_points, result.valid_model_points, result.projected_points,
+                               result.dist_filtered, result.angle_filtered))
             break;
 
         if (inlier_count < 10) break;
@@ -110,7 +112,12 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
                                    Eigen::Matrix<float,6,6>& A,
                                    Eigen::Matrix<float,6,1>& b,
                                    float& residual,
-                                   int&   inlier_count)
+                                   int&   inlier_count,
+                                   int&   valid_live,
+                                   int&   valid_model,
+                                   int&   projected,
+                                   int&   dist_filtered,
+                                   int&   angle_filtered)
 {
     const int W = live.width;
     const int H = live.height;
@@ -156,9 +163,17 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
         Eigen::Matrix<float,6,1> b;
         float residual;
         int   count;
+        int   valid_live;
+        int   valid_model;
+        int   projected;
+        int   dist_filtered;
+        int   angle_filtered;
+
         LocalAcc() : A(Eigen::Matrix<float,6,6>::Zero()),
                      b(Eigen::Matrix<float,6,1>::Zero()),
-                     residual(0.0f), count(0) {}
+                     residual(0.0f), count(0),
+                     valid_live(0), valid_model(0), projected(0),
+                     dist_filtered(0), angle_filtered(0) {}
     };
     std::vector<LocalAcc> local(num_threads);
 
@@ -184,6 +199,7 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
             Eigen::Vector3f v_ref = R_rel * live_v + t_rel;
             
             if (v_ref.z() <= 0.001f) continue;
+            acc.valid_live++;
 
             float model_x = fx * v_ref.x() / v_ref.z() + cx;
             float model_y = fy * v_ref.y() / v_ref.z() + cy;
@@ -193,16 +209,22 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
 
             // Use full-res model dimensions
             if (mx < 0 || mx >= sensor::FRAME_W || my < 0 || my >= sensor::FRAME_H) continue;
+            acc.projected++;
+            
             int midx = my * sensor::FRAME_W + mx;
 
             const Eigen::Vector3f& model_v = model.vertices[midx];
             const Eigen::Vector3f& model_n = model.normals[midx];
             if (model_v.norm() < 1e-6f || model_n.norm() < 1e-6f) continue;
+            acc.valid_model++;
 
             // Correspondence check (Distance)
             // Fix: Both must be in the same space for a valid distance check
             float dist = (v_ref - model_v).norm();
-            if (dist > params_.dist_threshold) continue;
+            if (dist > params_.dist_threshold) {
+                acc.dist_filtered++;
+                continue;
+            }
 
             // Normal angle check
             const Eigen::Vector3f& live_n = live.normals[idx];
@@ -211,7 +233,10 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
             // Map live normal to reference space
             Eigen::Vector3f live_n_ref = R_rel * live_n;
             float dot = std::abs(live_n_ref.dot(model_n));
-            if (dot < angle_thresh_cos) continue;
+            if (dot < angle_thresh_cos) {
+                acc.angle_filtered++;
+                continue;
+            }
 
             // Point-to-plane error: n^T * (live_in_ref - model)
             float err = model_n.dot(v_ref - model_v);
@@ -240,11 +265,22 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
     }
 
     // Merge thread-local results
+    valid_live = 0;
+    valid_model = 0;
+    projected = 0;
+    dist_filtered = 0;
+    angle_filtered = 0;
+
     for (auto& acc : local) {
         A += acc.A;
         b += acc.b;
         residual    += acc.residual;
         inlier_count += acc.count;
+        valid_live     += acc.valid_live;
+        valid_model    += acc.valid_model;
+        projected      += acc.projected;
+        dist_filtered  += acc.dist_filtered;
+        angle_filtered += acc.angle_filtered;
     }
 
     return inlier_count > 0;
