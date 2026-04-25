@@ -157,8 +157,6 @@ void ControlPanel::setupUI() {
     btn_glb_ = new QPushButton("Export GLB (Unity)", grp_export);
     btn_ply_->setStyleSheet("QPushButton { background: #2a4a7a; color: white; padding: 5px; border-radius: 4px; }");
     btn_glb_->setStyleSheet("QPushButton { background: #4a2a7a; color: white; padding: 5px; border-radius: 4px; }");
-    btn_ply_->setEnabled(false);
-    btn_glb_->setEnabled(false);
     v_exp->addWidget(btn_ply_);
     v_exp->addWidget(btn_glb_);
     inner_layout->addWidget(grp_export);
