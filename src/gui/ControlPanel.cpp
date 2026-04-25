@@ -10,6 +10,7 @@
 #include <QGridLayout>
 #include <QFrame>
 #include <QScrollArea>
+#include <QSlider>
 
 namespace kfusion {
 namespace gui {
@@ -151,6 +152,32 @@ void ControlPanel::setupUI() {
     v_mode->addWidget(combo_mode_);
     inner_layout->addWidget(grp_mode);
 
+    auto* grp_cam = new QGroupBox("Camera Controls (XYZ Rotation)", inner);
+    auto* h_cam = new QVBoxLayout(grp_cam);
+    
+    auto* h_x = new QHBoxLayout();
+    h_x->addWidget(new QLabel("Pitch (X)"));
+    slider_x_ = new QSlider(Qt::Horizontal, grp_cam);
+    slider_x_->setRange(-180, 180);
+    h_x->addWidget(slider_x_);
+    h_cam->addLayout(h_x);
+
+    auto* h_y = new QHBoxLayout();
+    h_y->addWidget(new QLabel("Yaw (Y)"));
+    slider_y_ = new QSlider(Qt::Horizontal, grp_cam);
+    slider_y_->setRange(-180, 180);
+    h_y->addWidget(slider_y_);
+    h_cam->addLayout(h_y);
+
+    auto* h_z = new QHBoxLayout();
+    h_z->addWidget(new QLabel("Roll (Z)"));
+    slider_z_ = new QSlider(Qt::Horizontal, grp_cam);
+    slider_z_->setRange(-180, 180);
+    h_z->addWidget(slider_z_);
+    h_cam->addLayout(h_z);
+    
+    inner_layout->addWidget(grp_cam);
+
     auto* grp_export = new QGroupBox("Export", inner);
     auto* v_exp = new QVBoxLayout(grp_export);
     btn_ply_ = new QPushButton("Export PLY", grp_export);
@@ -190,6 +217,13 @@ void ControlPanel::connectSignals() {
     connect(spin_threads_, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &ControlPanel::threadsChanged);
     connect(btn_apply_hyper_, &QPushButton::clicked, this, &ControlPanel::hyperparamsApplyClicked);
+
+    auto emitCameraRotation = [this]() {
+        emit cameraRotationChanged(slider_x_->value(), slider_y_->value(), slider_z_->value());
+    };
+    connect(slider_x_, &QSlider::valueChanged, this, emitCameraRotation);
+    connect(slider_y_, &QSlider::valueChanged, this, emitCameraRotation);
+    connect(slider_z_, &QSlider::valueChanged, this, emitCameraRotation);
 }
 
 app::FusionHyperparams ControlPanel::hyperparamsFromUi() const {
@@ -246,6 +280,26 @@ void ControlPanel::onPipelineStopped() {
 void ControlPanel::setExportEnabled(bool enabled) {
     btn_ply_->setEnabled(enabled);
     btn_glb_->setEnabled(enabled);
+}
+
+void ControlPanel::setCameraRotation(int pitch, int yaw, int roll) {
+    // Block signals to avoid infinite loop between mouse updates and slider updates
+    slider_x_->blockSignals(true);
+    slider_y_->blockSignals(true);
+    slider_z_->blockSignals(true);
+
+    // Normalize values to -180..180
+    pitch = (pitch % 360 + 360) % 360; if (pitch > 180) pitch -= 360;
+    yaw   = (yaw % 360 + 360) % 360;   if (yaw > 180) yaw -= 360;
+    roll  = (roll % 360 + 360) % 360;  if (roll > 180) roll -= 360;
+
+    slider_x_->setValue(pitch);
+    slider_y_->setValue(yaw);
+    slider_z_->setValue(roll);
+
+    slider_x_->blockSignals(false);
+    slider_y_->blockSignals(false);
+    slider_z_->blockSignals(false);
 }
 
 } // namespace gui

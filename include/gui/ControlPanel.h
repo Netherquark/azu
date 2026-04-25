@@ -9,6 +9,7 @@ class QComboBox;
 class QSpinBox;
 class QDoubleSpinBox;
 class QLabel;
+class QSlider;
 QT_END_NAMESPACE
 
 namespace kfusion {
@@ -31,11 +32,13 @@ signals:
     void modeChanged(int index); // 0=PointCloud, 1=Mesh
     void threadsChanged(int n);
     void hyperparamsApplyClicked();
+    void cameraRotationChanged(int pitch, int yaw, int roll);
 
 public slots:
     void onPipelineStarted();
     void onPipelineStopped();
     void setExportEnabled(bool enabled);
+    void setCameraRotation(int pitch, int yaw, int roll);
 
 private:
     QPushButton* btn_start_  = nullptr;
@@ -46,6 +49,10 @@ private:
     QComboBox*   combo_mode_ = nullptr;
     QSpinBox*    spin_threads_ = nullptr;
     QLabel*      lbl_status_ = nullptr;
+
+    QSlider*     slider_x_ = nullptr;
+    QSlider*     slider_y_ = nullptr;
+    QSlider*     slider_z_ = nullptr;
 
     QDoubleSpinBox* spin_depth_min_  = nullptr;
     QDoubleSpinBox* spin_depth_max_  = nullptr;

@@ -3,7 +3,11 @@
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions_3_3_Core>
 #include <QPoint>
+#include <QTimer>
+#include <QElapsedTimer>
+#include <QKeyEvent>
 #include <memory>
+#include <set>
 #include "rendering/PreviewRenderer.h"
 #include "meshing/MeshData.h"
 
@@ -21,6 +25,12 @@ public:
     void updateMesh(const meshing::MeshData& mesh);
     void clearGeometry();
 
+signals:
+    void cameraRotated(int pitch, int yaw, int roll);
+
+public slots:
+    void setCameraRotation(int pitch, int yaw, int roll);
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
@@ -29,12 +39,27 @@ protected:
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
+    void keyPressEvent(QKeyEvent* e) override;
+    void keyReleaseEvent(QKeyEvent* e) override;
+    void focusOutEvent(QFocusEvent* e) override;
+
+private slots:
+    void updatePhysics();
 
 private:
     std::unique_ptr<rendering::PreviewRenderer> renderer_;
     QPoint last_mouse_pos_;
     bool   mouse_pressed_ = false;
     Qt::MouseButton pressed_button_ = Qt::NoButton;
+    
+    QTimer* physics_timer_;
+    QElapsedTimer frame_timer_;
+    std::set<int> pressed_keys_;
+    
+    // Axis constraints for panning
+    bool axis_lock_x_ = false;
+    bool axis_lock_y_ = false;
+    bool axis_lock_z_ = false;
 };
 
 } // namespace gui
