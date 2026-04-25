@@ -19,17 +19,55 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
     setWindowTitle("KinectFusionQt");
-    resize(1280, 720);
+    resize(1600, 900);
 
     setStyleSheet(R"css(
-        QMainWindow, QWidget { background-color: #1e1f24; color: #ddd; }
-        QGroupBox { border: 1px solid #444; border-radius: 4px; margin-top: 8px; padding-top: 6px; }
-        QGroupBox::title { subcontrol-origin: margin; left: 8px; color: #aaa; }
+        QMainWindow, QWidget { background-color: #1e1f24; color: #ddd; font-size: 26px; }
+        QGroupBox {
+            border: 1px solid #444;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding: 12px 8px 8px 8px;
+            font-size: 26px;
+            font-weight: bold;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            color: #bbb;
+            font-size: 26px;
+        }
         QProgressBar { border: 1px solid #555; border-radius: 3px; background: #333; }
         QProgressBar::chunk { background: #3a7fcf; border-radius: 2px; }
-        QComboBox { background: #333; border: 1px solid #555; border-radius: 3px; padding: 3px; }
-        QLabel { color: #ccc; }
-        QStatusBar { background: #16171c; color: #aaa; }
+        QComboBox {
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 5px 8px;
+            font-size: 26px;
+            min-height: 22px;
+        }
+        QLabel { color: #ccc; font-size: 26px; }
+        QStatusBar { background: #16171c; color: #aaa; font-size: 22px; }
+        QSpinBox, QDoubleSpinBox {
+            background: #2a2b30;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 3px 6px;
+            font-size: 26px;
+            min-height: 22px;
+            color: #ddd;
+        }
+        QScrollBar:vertical {
+            background: #2a2b30;
+            width: 8px;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical {
+            background: #555;
+            border-radius: 4px;
+            min-height: 20px;
+        }
     )css");
 
     pipeline_ = std::make_unique<app::PipelineController>();
@@ -50,21 +88,31 @@ void MainWindow::setupUI() {
     auto* central = new QWidget(this);
     setCentralWidget(central);
 
+    auto* splitter = new QSplitter(Qt::Horizontal, central);
+    splitter->setHandleWidth(3);
+    splitter->setStyleSheet("QSplitter::handle { background: #333; }");
+
     auto* hbox = new QHBoxLayout(central);
-    hbox->setSpacing(4);
+    hbox->setSpacing(0);
     hbox->setContentsMargins(4, 4, 4, 4);
+    hbox->addWidget(splitter);
 
     // Left: control panel
     control_panel_ = new ControlPanel(this);
-    hbox->addWidget(control_panel_);
+    splitter->addWidget(control_panel_);
 
     // Center: OpenGL view
     gl_widget_ = new OpenGLWidget(this);
-    hbox->addWidget(gl_widget_, 1);
+    splitter->addWidget(gl_widget_);
 
     // Right: metrics panel
     metrics_panel_ = new MetricsPanel(this);
-    hbox->addWidget(metrics_panel_);
+    splitter->addWidget(metrics_panel_);
+
+    // Set stretch factors: panels stay compact, OpenGL gets the space
+    splitter->setStretchFactor(0, 0);  // control panel: don't stretch
+    splitter->setStretchFactor(1, 1);  // OpenGL view: stretch to fill
+    splitter->setStretchFactor(2, 0);  // metrics panel: don't stretch
 
     statusBar()->showMessage("Ready — Connect Kinect and press Start.");
 }

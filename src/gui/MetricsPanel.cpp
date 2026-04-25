@@ -9,22 +9,23 @@ namespace gui {
 
 MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
     setupUI();
-    setFixedWidth(220);
+    setMinimumWidth(380);
+    setMaximumWidth(500);
 }
 
 QLabel* MetricsPanel::makeLabel(const QString& text) {
     auto* lbl = new QLabel(text, this);
-    lbl->setStyleSheet("color: #ccc; font-family: monospace; font-size: 11px;");
+    lbl->setStyleSheet("color: #ccc; font-family: monospace; font-size: 26px;");
     return lbl;
 }
 
 void MetricsPanel::setupUI() {
     auto* root = new QVBoxLayout(this);
-    root->setSpacing(6);
-    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(10);
+    root->setContentsMargins(10, 10, 10, 10);
 
     auto* title = new QLabel("Pipeline Metrics", this);
-    title->setStyleSheet("color: #eee; font-weight: bold; font-size: 13px;");
+    title->setStyleSheet("color: #eee; font-weight: bold; font-size: 32px; padding: 8px 0;");
     root->addWidget(title);
 
     // Performance group
@@ -127,10 +128,10 @@ void MetricsPanel::update(const app::PipelineMetrics& m) {
 
     if (m.tracking_ok) {
         lbl_tracking_status_->setText("OK");
-        lbl_tracking_status_->setStyleSheet("color: #4f4; font-family: monospace; font-size: 11px;");
+        lbl_tracking_status_->setStyleSheet("color: #4f4; font-family: monospace; font-size: 26px; font-weight: bold;");
     } else {
         lbl_tracking_status_->setText("LOST");
-        lbl_tracking_status_->setStyleSheet("color: #f44; font-family: monospace; font-size: 11px;");
+        lbl_tracking_status_->setStyleSheet("color: #f44; font-family: monospace; font-size: 26px; font-weight: bold;");
     }
 
     QString state_str;
