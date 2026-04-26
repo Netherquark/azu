@@ -11,6 +11,7 @@
 
 #include "sensor/KinectSensor.h"
 #include "sensor/FrameData.h"
+#include "sensor/Preprocessor.h"
 #include "tracking/ICPTracker.h"
 #include "tsdf/TSDFVolume.h"
 #include "meshing/MarchingCubes.h"
@@ -49,7 +50,7 @@ using MeshReadyCallback  = std::function<void()>; // mesh updated in shared mesh
 
 class PipelineController {
 public:
-    PipelineController();
+    explicit PipelineController(sensor::PreprocessBackend preferred_backend = sensor::PreprocessBackend::Auto);
     ~PipelineController();
 
     bool start();
@@ -74,10 +75,15 @@ public:
 
     FusionHyperparams hyperparamsSnapshot() const;
     void              setHyperparams(const FusionHyperparams& h);
+    sensor::PreprocessBackend activeBackend() const { return active_backend_.load(); }
+    sensor::PreprocessBackend preferredBackend() const { return preferred_backend_; }
 
 private:
     FusionHyperparams          hyperparams_{FusionHyperparams::defaults()};
     mutable std::mutex         hyper_mutex_;
+    sensor::PreprocessBackend  preferred_backend_ = sensor::PreprocessBackend::Auto;
+    std::atomic<sensor::PreprocessBackend> active_backend_{sensor::PreprocessBackend::CPU};
+    std::unique_ptr<sensor::Preprocessor> preprocessor_;
 
     // Components
     std::unique_ptr<sensor::KinectSensor>    sensor_;
@@ -130,6 +136,12 @@ private:
     int                                   frame_count_    = 0;
     bool                                  first_frame_    = true;
 
+    // Per-instance log throttle counters — replaces static locals in worker threads
+    // to avoid UB data races when threads are stopped and restarted.
+    int                                   ui_skip_counter_      = 0;
+    int                                   lost_log_counter_     = 0;
+    int                                   success_log_counter_  = 0;
+
     // Tracking model frame (double-buffered PingPong)
     struct PingPongModel {
         std::shared_ptr<tracking::ModelFrame> buffers[2];
@@ -150,9 +162,11 @@ private:
     std::atomic<float>                    mesh_extract_progress_{0.0f};
     std::atomic<float>                    export_progress_{0.0f};
     std::atomic<bool>                     use_gpu_{false};
+    sensor::cudaStream_t                  cuda_stream_ = nullptr;
     mutable std::mutex                    control_mutex_;
 
     void onRawFrame(std::shared_ptr<sensor::RawFrame> raw);
+    void configurePreprocessor();
     void trackingLoop();
     void integrationLoop();
     void meshingLoop();

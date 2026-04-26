@@ -1,6 +1,5 @@
 #pragma once
 
-#include <libfreenect/libfreenect.h>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -11,6 +10,9 @@
 
 namespace kfusion {
 namespace sensor {
+
+struct freenect_context;
+struct freenect_device;
 
 // Raw Kinect v1 depth/rgb frame dimensions
 static constexpr int DEPTH_WIDTH  = 640;

@@ -1,18 +1,13 @@
 #include "app/PipelineController.h"
 #include "export/GLBExporter.h"
 #include "export/PLYExporter.h"
-#include "meshing/MarchingCubes.h"
-#include "meshing/MeshData.h"
-#include "sensor/SuperResolution.h"
-#include "tsdf/TSDFVolume.h"
 #include "utils/Logger.h"
 #include "utils/Timer.h"
 #include <QCoreApplication>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <iostream>
-#include <sstream>
+#include <stdexcept>
 
 #ifdef CUDA_ENABLED
 #include <cuda_runtime.h>
@@ -23,27 +18,27 @@ namespace app {
 
 using namespace std::chrono;
 
-PipelineController::PipelineController()
-    : current_pose_(Eigen::Matrix4f::Identity()) {
-  syncIcpDepthFromRange(hyperparams_);
-  sensor_ = std::make_unique<sensor::KinectSensor>();
-  tracker_ = std::make_unique<tracking::ICPTracker>(hyperparams_.icp);
-  tsdf_ = std::make_unique<tsdf::TSDFVolume>(hyperparams_.tsdf);
-  cubes_ = std::make_unique<meshing::MarchingCubes>();
+PipelineController::PipelineController(sensor::PreprocessBackend preferred_backend)
+    : preferred_backend_(preferred_backend),
+      current_pose_(Eigen::Matrix4f::Identity())
+{
+    syncIcpDepthFromRange(hyperparams_);
+    sensor_  = std::make_unique<sensor::KinectSensor>();
+    tracker_ = std::make_unique<tracking::ICPTracker>(hyperparams_.icp);
+    tsdf_    = std::make_unique<tsdf::TSDFVolume>(hyperparams_.tsdf);
+    cubes_   = std::make_unique<meshing::MarchingCubes>();
+    
+    // Initialize data pool for automated recycling
+    data_pool_state_ = std::make_shared<DataPool>();
+    for (size_t i = 0; i < DATA_POOL_SIZE; ++i) {
+        data_pool_state_->data_pool.push_back(std::make_shared<sensor::FrameData>());
+        data_pool_state_->free_data_queue.push(data_pool_state_->data_pool.back().get());
+    }
 
-  // Initialize data pool for automated recycling
-  data_pool_state_ = std::make_shared<DataPool>();
-  for (size_t i = 0; i < DATA_POOL_SIZE; ++i) {
-    data_pool_state_->data_pool.push_back(
-        std::make_shared<sensor::FrameData>());
-    data_pool_state_->free_data_queue.push(
-        data_pool_state_->data_pool.back().get());
-  }
-
-  // Initialize ping-pong buffers
-  for (int i = 0; i < 2; ++i) {
-    model_pingpong_.buffers[i] = std::make_shared<tracking::ModelFrame>();
-  }
+    // Initialize ping-pong buffers
+    for (int i = 0; i < 2; ++i) {
+        model_pingpong_.buffers[i] = std::make_shared<tracking::ModelFrame>();
+    }
 }
 
 PipelineController::~PipelineController() { stop(); }
@@ -53,58 +48,50 @@ bool PipelineController::start() {
   if (running_.load())
     return true;
 
-  KFLOG_INFO("Pipeline", "Starting reconstruction pipeline...");
+    running_.store(true);
+    state_.store(PipelineState::Running);
+    first_frame_          = true;
+    frame_count_          = 0;
+    ui_skip_counter_      = 0;
+    lost_log_counter_     = 0;
+    success_log_counter_  = 0;
+    current_pose_  = Eigen::Matrix4f::Identity();
+    // Set frame callback before starting capture
+    sensor_->setFrameCallback([this](std::shared_ptr<sensor::RawFrame> raw) {
+        onRawFrame(std::move(raw));
+    });
 
-  if (!sensor_->init()) {
-    KFLOG_ERROR("Pipeline",
-                "Sensor initialization FAILED. Check connection/drivers.");
-    state_.store(PipelineState::Error);
-    return false;
-  }
-
-  // Clear queues
-  {
-    std::lock_guard<std::mutex> lk(tracking_queue_mutex_);
-    while (!raw_queue_.empty())
-      raw_queue_.pop();
-  }
-  {
-    std::lock_guard<std::mutex> lk(integration_queue_mutex_);
-    while (!integration_queue_.empty())
-      integration_queue_.pop();
-  }
-
-  running_.store(true);
-  state_.store(PipelineState::Running);
-  first_frame_ = true;
-  frame_count_ = 0;
-  current_pose_ = Eigen::Matrix4f::Identity();
-
-  // Set frame callback before starting capture
-  sensor_->setFrameCallback([this](std::shared_ptr<sensor::RawFrame> raw) {
-    onRawFrame(std::move(raw));
-  });
-
-  if (!sensor_->start()) {
-    KFLOG_ERROR("Pipeline", "Sensor start FAILED. Stream could not be opened.");
-    running_.store(false);
-    state_.store(PipelineState::Error);
-    return false;
-  }
+    if (!sensor_->start()) {
+        KFLOG_ERROR("Pipeline", "Sensor start FAILED. Stream could not be opened.");
+        running_.store(false);
+        state_.store(PipelineState::Error);
+        return false;
+    }
 
 #ifdef CUDA_ENABLED
-  try {
-    tsdf_->initGPU();
-    tracker_->initGPU();
-    // ModelFrame buffers are managed via RAII in the tracking::ModelFrame
-    // struct
-    for (int i = 0; i < 2; ++i) {
-      model_pingpong_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(
-          sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-      model_pingpong_.buffers[i]->d_normals = utils::make_cuda_unique<float3>(
-          sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-      model_pingpong_.buffers[i]->d_colors = utils::make_cuda_unique<uchar3>(
-          sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+    try {
+        tsdf_->initGPU();
+        tracker_->initGPU();
+        cudaError_t stream_err = cudaStreamCreate(&cuda_stream_);
+        if (stream_err != cudaSuccess) {
+            throw std::runtime_error(cudaGetErrorString(stream_err));
+        }
+        // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
+        for (int i = 0; i < 2; ++i) {
+            model_pingpong_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            model_pingpong_.buffers[i]->d_normals = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+        }
+        use_gpu_ = true;
+        tsdf_->setGPUEnabled(true);
+        KFLOG_INFO("Pipeline", "CUDA hardware acceleration ENABLED (NVIDIA GPU detected).");
+    } catch (const std::exception& e) {
+        if (cuda_stream_) {
+            cudaStreamDestroy(cuda_stream_);
+            cuda_stream_ = nullptr;
+        }
+        use_gpu_ = false;
+        tsdf_->setGPUEnabled(false);
+        KFLOGF_WARN("Pipeline", "CUDA initialization FAILED: %s. Falling back to CPU mode.", e.what());
     }
     use_gpu_ = true;
     tsdf_->setGPUEnabled(true);
@@ -112,6 +99,7 @@ bool PipelineController::start() {
                "CUDA hardware acceleration ENABLED (NVIDIA GPU detected).");
   } catch (const std::exception &e) {
     use_gpu_ = false;
+    cuda_stream_ = nullptr;
     tsdf_->setGPUEnabled(false);
     KFLOGF_WARN("Pipeline",
                 "CUDA initialization FAILED: %s. Falling back to CPU mode.",
@@ -123,10 +111,15 @@ bool PipelineController::start() {
   KFLOG_INFO("Pipeline", "Using CPU-only path (CUDA not enabled in build).");
 #endif
 
-  // Launch pipeline threads
-  tracking_thread_ = std::thread(&PipelineController::trackingLoop, this);
-  integration_thread_ = std::thread(&PipelineController::integrationLoop, this);
-  meshing_thread_ = std::thread(&PipelineController::meshingLoop, this);
+    configurePreprocessor();
+    if (preprocessor_) {
+        preprocessor_->reset();
+    }
+
+    // Launch pipeline threads
+    tracking_thread_    = std::thread(&PipelineController::trackingLoop, this);
+    integration_thread_ = std::thread(&PipelineController::integrationLoop, this);
+    meshing_thread_     = std::thread(&PipelineController::meshingLoop, this);
 
   last_capture_time_ = steady_clock::now();
   last_tracking_time_ = steady_clock::now();
@@ -200,64 +193,84 @@ void PipelineController::stop() {
   }
 
 #ifdef CUDA_ENABLED
-  tsdf_->freeGPU();
-  tracker_->freeGPU();
-  for (int i = 0; i < 2; ++i) {
-    model_pingpong_.buffers[i]->d_vertices.reset();
-    model_pingpong_.buffers[i]->d_normals.reset();
-  }
+    if (cuda_stream_) {
+        cudaStreamDestroy(cuda_stream_);
+        cuda_stream_ = nullptr;
+    }
+    tsdf_->freeGPU();
+    tracker_->freeGPU();
+    for (int i = 0; i < 2; ++i) {
+        model_pingpong_.buffers[i]->d_vertices.reset();
+        model_pingpong_.buffers[i]->d_normals.reset();
+    }
 #endif
   KFLOG_INFO("Pipeline", "Pipeline shutdown complete.");
 }
 
 void PipelineController::reset() {
-  // Note: stop() already has control_mutex_, so we don't lock here yet
-  // to avoid deadlock, but we ensure reset is sequential.
-  stop();
-  std::lock_guard<std::mutex> ctrl_lk(control_mutex_);
+    // stop() acquires and releases control_mutex_ internally.
+    // There is an intentional TOCTOU window between stop() returning and the
+    // re-lock below where another thread could call start(). This is acceptable
+    // because the UI is expected to serialize control operations. If concurrent
+    // control is ever needed, merge stop() body inline here under one lock.
+    stop();
+    std::lock_guard<std::mutex> ctrl_lk(control_mutex_);
 
-  // Clear queues
-  {
-    std::lock_guard<std::mutex> lk(tracking_queue_mutex_);
-    while (!raw_queue_.empty())
-      raw_queue_.pop();
-  }
-  {
-    std::lock_guard<std::mutex> lk(integration_queue_mutex_);
-    while (!integration_queue_.empty())
-      integration_queue_.pop();
-  }
-
-  mesh_extraction_requested_.store(false);
-
-  // Clear Ping-Pong buffers under lock
-  {
-    std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
-    for (int i = 0; i < 2; ++i) {
-      if (!model_pingpong_.buffers[i])
-        continue;
-      auto &mf = *model_pingpong_.buffers[i];
-      std::fill(mf.vertices.begin(), mf.vertices.end(),
-                Eigen::Vector3f::Zero());
-      std::fill(mf.normals.begin(), mf.normals.end(), Eigen::Vector3f::Zero());
+    // Clear queues
+    {
+        std::lock_guard<std::mutex> lk(tracking_queue_mutex_);
+        while (!raw_queue_.empty()) raw_queue_.pop();
     }
-    model_pingpong_.front_idx.store(0);
-    model_pingpong_.back_idx.store(1);
-  }
+    {
+        std::lock_guard<std::mutex> lk(integration_queue_mutex_);
+        while (!integration_queue_.empty()) integration_queue_.pop();
+    }
 
-  tsdf_->reset();
-  {
-    std::lock_guard<std::mutex> lk(pose_mutex_);
-    current_pose_ = Eigen::Matrix4f::Identity();
-    last_pose_ = Eigen::Matrix4f::Identity();
-  }
-  first_frame_ = true;
-  frame_count_ = 0;
-  metrics_ = PipelineMetrics{};
-  shared_mesh_.update(std::make_shared<meshing::MeshData>());
-  state_.store(PipelineState::Idle);
-  KFLOG_INFO("Pipeline",
-             "System RESET: Volume cleared, pose re-centered, queues drained.");
+    mesh_extraction_requested_.store(false);
+
+    // Clear Ping-Pong buffers under lock
+    {
+        std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
+        for (int i = 0; i < 2; ++i) {
+            if (!model_pingpong_.buffers[i]) continue;
+            auto& mf = *model_pingpong_.buffers[i];
+            std::fill(mf.vertices.begin(), mf.vertices.end(), Eigen::Vector3f::Zero());
+            std::fill(mf.normals.begin(), mf.normals.end(), Eigen::Vector3f::Zero());
+        }
+        model_pingpong_.front_idx.store(0);
+        model_pingpong_.back_idx.store(1);
+    }
+
+    tsdf_->reset();
+    {
+        std::lock_guard<std::mutex> lk(pose_mutex_);
+        current_pose_ = Eigen::Matrix4f::Identity();
+        last_pose_ = Eigen::Matrix4f::Identity();
+    }
+    first_frame_          = true;
+    frame_count_          = 0;
+    ui_skip_counter_      = 0;
+    lost_log_counter_     = 0;
+    success_log_counter_  = 0;
+    metrics_      = PipelineMetrics{};
+    if (preprocessor_) {
+        preprocessor_->reset();
+    }
+    shared_mesh_.update(std::make_shared<meshing::MeshData>());
+    state_.store(PipelineState::Idle);
+    KFLOG_INFO("Pipeline", "System RESET: Volume cleared, pose re-centered, queues drained.");
+}
+
+void PipelineController::configurePreprocessor() {
+    sensor::PreprocessBackend resolved = sensor::PreprocessBackend::CPU;
+    preprocessor_ = sensor::makePreprocessor(preferred_backend_,
+                                             use_gpu_.load(),
+                                             cuda_stream_,
+                                             &resolved);
+    active_backend_.store(resolved);
+    KFLOGF_INFO("Pipeline", "Preprocessor backend: requested=%s active=%s",
+                sensor::backendName(preferred_backend_),
+                sensor::backendName(resolved));
 }
 
 // Called from sensor capture thread — must be lightweight
@@ -336,33 +349,65 @@ void PipelineController::trackingLoop() {
     // We can release 'raw' immediately after buildFrameData copies it
     sensor_->releaseFrame(std::move(raw));
 
-    // Notify UI removed from here to avoid "double model" and jitter.
-    // We now only show the stable integrated model from the TSDF volume.
+        // Build processed frame here (using pool)
+        auto frame = acquireFreeData();
+        if (!frame) {
+            KFLOG_WARN("Pipeline", "FrameData pool exhausted — dropping raw frame (increase pool or slow capture)");
+            sensor_->releaseFrame(std::move(raw)); // Don't forget to recycle raw
+            continue;
+        }
+        
+        frame->frame_id = raw->frame_id;
+        float d_min = 0.3f, d_max = 5.0f;
+        {
+            std::lock_guard<std::mutex> lk(hyper_mutex_);
+            d_min = hyperparams_.min_depth;
+            d_max = hyperparams_.max_depth;
+        }
+        if (preprocessor_) {
+            preprocessor_->process(*raw, d_min, d_max);
+        }
+        sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame, d_min, d_max);
+        sensor::computeNormals(*frame);
+        
+        // We can release 'raw' immediately after buildFrameData copies it
+        sensor_->releaseFrame(std::move(raw));
 
-    // First frame: initialize pose; skip tracking
-    if (first_frame_) {
-      first_frame_ = false;
-      frame->pose = Eigen::Matrix4f::Identity();
-      // Enqueue for integration
-      {
-        std::lock_guard<std::mutex> lk(integration_queue_mutex_);
-        if (integration_queue_.size() < 3)
-          integration_queue_.push(frame);
-        else
-          releaseData(std::move(frame));
-      }
-      integration_queue_cv_.notify_one();
+        // Notify UI (throttled, safe shared_ptr copy)
+        if (frame_ready_cb_) {
+            // ui_skip_counter_ is a member variable (not a static local) to
+            // avoid UB data races if the tracking thread is ever restarted.
+            if (++ui_skip_counter_ % 3 == 0) {
+                auto frame_ui = frame; // shared_ptr copy, cheap
+                QMetaObject::invokeMethod(
+                    qApp, [this, frame_ui]() {
+                        if (frame_ready_cb_) frame_ready_cb_(*frame_ui);
+                    }, Qt::QueuedConnection);
+            }
+        }
 
-      {
-        std::lock_guard<std::mutex> lk(metrics_mutex_);
-        metrics_.tracking_ok = true;
-        metrics_.icp_error = 0.0f;
-      }
-      KFLOGF_INFO("Pipeline",
-                  "First frame accepted (ID: %d). Initializing world origin.",
-                  frame->frame_id);
-      continue;
-    }
+        // First frame: initialize pose; skip tracking
+        if (first_frame_) {
+            first_frame_ = false;
+            frame->pose = Eigen::Matrix4f::Identity();
+            // Enqueue for integration
+            {
+                std::lock_guard<std::mutex> lk(integration_queue_mutex_);
+                if (integration_queue_.size() < 3)
+                    integration_queue_.push(frame);
+                else
+                    releaseData(std::move(frame));
+            }
+            integration_queue_cv_.notify_one();
+
+            {
+                std::lock_guard<std::mutex> lk(metrics_mutex_);
+                metrics_.tracking_ok = true;
+                metrics_.icp_error   = 0.0f;
+            }
+            KFLOGF_INFO("Pipeline", "First frame accepted (ID: %d). Initializing world origin.", frame->frame_id);
+            continue;
+        }
 
     // Build pyramid for ICP
     sensor::FramePyramid pyramid;
@@ -434,62 +479,55 @@ void PipelineController::trackingLoop() {
       metrics_.tracking_ok = icp_result.tracking_ok;
     }
 
-    if (!icp_result.tracking_ok) {
-      static int lost_log = 0;
-      if (++lost_log % 30 == 1) {
-        const char *advice = "Move device slowly or improve scene geometry.";
-        if (icp_result.inliers < 1000)
-          advice = "Insufficient geometry overlap (point the sensor at a known "
-                   "surface).";
-        else if (icp_result.error > 1e-3)
-          advice = "High residual error (fast motion or dynamic objects).";
-        else if (icp_result.dist_filtered > 10000)
-          advice = "Too many points filtered by distance (too close/far).";
+        if (!icp_result.tracking_ok) {
+            // lost_log_counter_ is a member (not static local) to avoid UB on thread restart.
+            if (++lost_log_counter_ % 30 == 1) {
+                const char* advice = "Move device slowly or improve scene geometry.";
+                if (icp_result.inliers < 1000) advice = "Insufficient geometry overlap (point the sensor at a known surface).";
+                else if (icp_result.error > 1e-3) advice = "High residual error (fast motion or dynamic objects).";
+                else if (icp_result.dist_filtered > 10000) advice = "Too many points filtered by distance (too close/far).";
 
-        KFLOGF_WARN(
-            "Pipeline",
-            "%s ICP Failed: inliers=%d, residual=%.6f, filtered=%d. Advice: %s",
-            (is_lost ? "[RELOCALIZING]" : "[TRACKING LOST]"),
-            icp_result.inliers, icp_result.error, icp_result.dist_filtered,
-            advice);
-      }
-    } else {
-      static int success_log = 0;
-      if (++success_log % 300 == 0) {
-        KFLOGF_INFO(
-            "Pipeline",
-            "Tracking STABLE: inliers=%d, err=%.6f, dist_f=%d, angle_f=%d",
-            icp_result.inliers, icp_result.error, icp_result.dist_filtered,
-            icp_result.angle_filtered);
-      }
-    }
+                KFLOGF_WARN("Pipeline", "%s ICP Failed: inliers=%d, residual=%.6f, filtered=%d. Advice: %s",
+                           (is_lost ? "[RELOCALIZING]" : "[TRACKING LOST]"),
+                           icp_result.inliers, icp_result.error, icp_result.dist_filtered, advice);
+            }
+        } else {
+            // success_log_counter_ is a member (not static local) to avoid UB on thread restart.
+            if (++success_log_counter_ % 300 == 0) {
+                KFLOGF_INFO("Pipeline", "Tracking STABLE: avg_inliers=%d, avg_residual=%.6f", 
+                           icp_result.inliers, icp_result.error);
+            }
+        }
 
-    if (icp_result.tracking_ok) {
-      {
-        std::lock_guard<std::mutex> lk(pose_mutex_);
-        current_pose_ = icp_result.pose;
-      }
-      frame->pose = icp_result.pose;
-      state_.store(PipelineState::Running);
+        if (icp_result.tracking_ok) {
+            {
+                std::lock_guard<std::mutex> lk(pose_mutex_);
+                current_pose_ = icp_result.pose;
+            }
+            frame->pose = icp_result.pose; 
+            state_.store(PipelineState::Running);
 
-      // Enqueue for integration
-      {
-        std::lock_guard<std::mutex> lk(integration_queue_mutex_);
-        if (integration_queue_.size() < 3)
-          integration_queue_.push(frame);
-        else
-          releaseData(std::move(frame));
-      }
-      integration_queue_cv_.notify_one();
-    } else {
-      // RELOCALIZATION: If tracking lost, don't update state or pose, but don't
-      // stop. We just don't integrate the frame. This keeps the model "clean".
-      if (!is_lost) {
-        KFLOG_WARN("Pipeline", "Tracking lost! Suspension of TSDF integration. "
-                               "Entering relocalization mode...");
-      }
-      state_.store(PipelineState::TrackingLost);
-      releaseData(std::move(frame));
+            // Enqueue for integration
+            {
+                std::lock_guard<std::mutex> lk(integration_queue_mutex_);
+                if (integration_queue_.size() < 3)
+                    integration_queue_.push(frame);
+                else
+                    releaseData(std::move(frame)); 
+            }
+            integration_queue_cv_.notify_one();
+        } else {
+            // RELOCALIZATION: If tracking lost, don't update state or pose, but don't stop.
+            // We just don't integrate the frame. This keeps the model "clean".
+            if (!is_lost) {
+                 KFLOG_WARN("Pipeline", "Tracking lost! Suspension of TSDF integration. Entering relocalization mode...");
+                 if (preprocessor_) {
+                     preprocessor_->resetTemporalState();
+                 }
+            }
+            state_.store(PipelineState::TrackingLost);
+            releaseData(std::move(frame));
+        }
     }
   }
 }

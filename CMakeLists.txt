@@ -55,6 +55,10 @@ endif()
 
 # ---- Dependency Resolution ----
 
+# PkgConfig must be loaded first — pkg_check_modules is used by both the Qt5
+# fallback path and libfreenect detection below.
+find_package(PkgConfig REQUIRED)
+
 # Qt5 - Try system paths first, then common Fedora/RHEL paths
 list(APPEND CMAKE_PREFIX_PATH "/usr/lib64/cmake/Qt5" "/usr/lib/cmake/Qt5")
 find_package(Qt5 QUIET COMPONENTS Widgets OpenGL)
@@ -76,8 +80,13 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # libfreenect (Kinect v1)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FREENECT REQUIRED libfreenect)
+pkg_check_modules(FREENECT QUIET libfreenect)
+if(FREENECT_FOUND)
+    add_compile_definitions(HAVE_FREENECT)
+    message(STATUS "libfreenect found - Kinect capture enabled")
+else()
+    message(WARNING "libfreenect not found - building without Kinect capture support")
+endif()
 
 # OpenGL
 find_package(OpenGL REQUIRED)
@@ -88,6 +97,9 @@ if(NOT Eigen3_FOUND)
     if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/eigen")
         message(STATUS "System Eigen3 not found, using bundled copy in third_party/eigen")
         set(EIGEN3_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/eigen")
+    elseif(EXISTS "/opt/homebrew/include/eigen3/Eigen")
+        message(STATUS "System Eigen3 not found via CMake, using Homebrew include path")
+        set(EIGEN3_INCLUDE_DIR "/opt/homebrew/include/eigen3")
     else()
         message(FATAL_ERROR "Eigen3 not found! Please run 'bash scripts/fetch_deps.sh' to download it.")
     endif()
@@ -139,6 +151,11 @@ if(CUDA_AVAILABLE)
     list(APPEND ALL_SOURCES ${CUDA_SOURCES})
 endif()
 
+set(SIGNAL_BACKEND "OpenMP")
+if(CUDA_AVAILABLE)
+    set(SIGNAL_BACKEND "CUDA+OpenMP")
+endif()
+
 # ---- Build Target ----
 
 add_executable(KinectFusionQt ${ALL_SOURCES})
@@ -184,6 +201,10 @@ if(Eigen3_FOUND)
     target_link_libraries(KinectFusionQt PRIVATE Eigen3::Eigen)
 endif()
 
+if(WIN32)
+    target_link_libraries(KinectFusionQt PRIVATE winmm)
+endif()
+
 # tinygltf implementation moved to GLBExporter.cpp to avoid multiple definition errors
 
 # ---- Diagnostic Summary ----
@@ -196,6 +217,7 @@ if(CUDA_AVAILABLE)
     message(STATUS "  CUDA Arch:    ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 message(STATUS "  OpenMP:       ${OpenMP_CXX_FOUND}")
+message(STATUS "  Kinect I/O:   ${FREENECT_FOUND}")
+message(STATUS "  Signal Path:  ${SIGNAL_BACKEND}")
 message(STATUS "  Qt Version:   ${Qt5_VERSION}")
 message(STATUS "--------------------------------------------")
-

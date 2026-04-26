@@ -6,6 +6,10 @@
 #include <sstream>
 #include <sys/time.h>
 
+#ifdef HAVE_FREENECT
+#include <libfreenect/libfreenect.h>
+#endif
+
 namespace kfusion {
 namespace sensor {
 
@@ -18,145 +22,128 @@ KinectSensor::KinectSensor() {
 }
 
 KinectSensor::~KinectSensor() {
-  stop();
-  if (device_) {
-    freenect_close_device(device_);
-    device_ = nullptr;
-  }
-  if (ctx_) {
-    freenect_shutdown(ctx_);
-    ctx_ = nullptr;
-  }
+    stop();
+#ifdef HAVE_FREENECT
+    if (device_) {
+        freenect_close_device(device_);
+        device_ = nullptr;
+    }
+    if (ctx_) {
+        freenect_shutdown(ctx_);
+        ctx_ = nullptr;
+    }
+#endif
 }
 
 bool KinectSensor::init() {
-  // After stop(), device/context stay open so the pipeline can start again
-  // (e.g. Reset scan).
-  if (device_)
+#ifndef HAVE_FREENECT
+    KFLOG_ERROR("Sensor", "Kinect support is unavailable in this build (libfreenect not found at configure time).");
+    return false;
+#else
+    // After stop(), device/context stay open so the pipeline can start again (e.g. Reset scan).
+    if (device_) return true;
+
+    if (freenect_init(&ctx_, nullptr) < 0) {
+        KFLOG_ERROR("Sensor", "freenect_init FAILED: Could not initialize libfreenect.");
+        return false;
+    }
+    freenect_set_log_level(ctx_, FREENECT_LOG_ERROR);
+    freenect_select_subdevices(ctx_,
+        static_cast<freenect_device_flags>(FREENECT_DEVICE_MOTOR | FREENECT_DEVICE_CAMERA));
+
+    int num_devices = freenect_num_devices(ctx_);
+    if (num_devices < 1) {
+        KFLOG_ERROR("Sensor", "No Kinect devices detected. Please check USB and power.");
+        return false;
+    }
+
+    if (freenect_open_device(ctx_, &device_, 0) < 0) {
+        KFLOG_ERROR("Sensor", "freenect_open_device FAILED: Could not open Kinect index 0.");
+        return false;
+    }
+
+    freenect_set_user(device_, this);
+    freenect_set_depth_callback(device_, depthCallback);
+    freenect_set_video_callback(device_, rgbCallback);
+    freenect_set_depth_mode(device_,
+        freenect_find_depth_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_DEPTH_11BIT));
+    freenect_set_video_mode(device_,
+        freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_RGB));
+
     return true;
-
-  if (freenect_init(&ctx_, nullptr) < 0) {
-    KFLOG_ERROR("Sensor",
-                "freenect_init FAILED: Could not initialize libfreenect.");
-    return false;
-  }
-  freenect_set_log_level(ctx_, FREENECT_LOG_ERROR);
-  freenect_select_subdevices(
-      ctx_, static_cast<freenect_device_flags>(FREENECT_DEVICE_MOTOR |
-                                               FREENECT_DEVICE_CAMERA));
-
-  int num_devices = freenect_num_devices(ctx_);
-  if (num_devices < 1) {
-    KFLOG_ERROR("Sensor",
-                "No Kinect devices detected. Please check USB and power.");
-    return false;
-  }
-
-  if (freenect_open_device(ctx_, &device_, 0) < 0) {
-    KFLOG_ERROR("Sensor",
-                "freenect_open_device FAILED: Could not open Kinect index 0.");
-    return false;
-  }
-
-  freenect_set_user(device_, this);
-  freenect_set_depth_callback(device_, depthCallback);
-  freenect_set_video_callback(device_, rgbCallback);
-  freenect_set_depth_mode(device_,
-                          freenect_find_depth_mode(FREENECT_RESOLUTION_MEDIUM,
-                                                   FREENECT_DEPTH_11BIT));
-  freenect_set_video_mode(
-      device_,
-      freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_RGB));
-
-  return true;
+#endif
 }
 
 bool KinectSensor::start() {
-  if (!device_)
+#ifndef HAVE_FREENECT
     return false;
-  if (running_.load())
-    return true;
+#else
+    if (!device_) return false;
+    if (running_.load()) return true;
 
   freenect_start_depth(device_);
   freenect_start_video(device_);
 
-  running_.store(true);
-  capture_thread_ = std::thread(&KinectSensor::captureLoop, this);
-  return true;
+    running_.store(true);
+    capture_thread_ = std::thread(&KinectSensor::captureLoop, this);
+    return true;
+#endif
 }
 
 void KinectSensor::stop() {
-  if (!running_.load())
+#ifndef HAVE_FREENECT
+    running_.store(false);
     return;
-  running_.store(false);
+#else
+    if (!running_.load()) return;
+    running_.store(false);
 
   if (device_) {
     freenect_stop_depth(device_);
     freenect_stop_video(device_);
   }
 
-  if (capture_thread_.joinable())
-    capture_thread_.join();
+    if (capture_thread_.joinable())
+        capture_thread_.join();
+#endif
 }
 
 void KinectSensor::captureLoop() {
-  while (running_.load()) {
-    struct timeval timeout;
-    timeout.tv_sec = 0;
-    timeout.tv_usec = 10000; // 10ms poll
-    int ret = freenect_process_events_timeout(ctx_, &timeout);
-    if (ret < 0 && running_.load()) {
-      KFLOGF_ERROR("Sensor", "libfreenect event processing error: %d", ret);
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+#ifdef HAVE_FREENECT
+    while (running_.load()) {
+        struct timeval timeout;
+        timeout.tv_sec  = 0;
+        timeout.tv_usec = 10000; // 10ms poll
+        int ret = freenect_process_events_timeout(ctx_, &timeout);
+        if (ret < 0 && running_.load()) {
+            KFLOGF_ERROR("Sensor", "libfreenect event processing error: %d", ret);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
-  }
+#endif
 }
 
-void KinectSensor::depthCallback(freenect_device *dev, void *depth,
-                                 uint32_t timestamp) {
-  static_cast<KinectSensor *>(freenect_get_user(dev))
-      ->onDepth(depth, timestamp);
+#ifdef HAVE_FREENECT
+void KinectSensor::depthCallback(freenect_device* dev, void* depth, uint32_t timestamp) {
+    static_cast<KinectSensor*>(freenect_get_user(dev))->onDepth(depth, timestamp);
 }
 
 void KinectSensor::rgbCallback(freenect_device *dev, void *rgb,
                                uint32_t timestamp) {
   static_cast<KinectSensor *>(freenect_get_user(dev))->onRgb(rgb, timestamp);
 }
+#else
+void KinectSensor::depthCallback(freenect_device*, void*, uint32_t) {}
+void KinectSensor::rgbCallback(freenect_device*, void*, uint32_t) {}
+#endif
 
-void KinectSensor::onDepth(void *data, uint32_t timestamp) {
-  std::lock_guard<std::mutex> lk(sync_mutex_);
-
-  if (!depth_pending_) {
-    depth_pending_ = acquireFreeFrame();
-    if (!depth_pending_)
-      return; // Pool exhausted
-  }
-
-  std::memcpy(depth_pending_->depth.data(), data,
-              DEPTH_WIDTH * DEPTH_HEIGHT * 2);
-  depth_pending_->timestamp_depth = timestamp / 1000.0;
-  depth_pending_->depth_valid = true;
-
-  // Check if we have an RGB frame to pair with
-  // Simple pairing: if rgb_pending_ is valid, we merge.
-  // In a more robust system, we'd check timestamps.
-  if (rgb_pending_ && rgb_pending_->rgb_valid) {
-    // Copy RGB into depth_pending_ (or vice versa)
-    std::memcpy(depth_pending_->rgb.data(), rgb_pending_->rgb.data(),
-                RGB_WIDTH * RGB_HEIGHT * 3);
-    depth_pending_->timestamp_rgb = rgb_pending_->timestamp_rgb;
-    depth_pending_->rgb_valid = true;
-    depth_pending_->frame_id = ++frame_counter_;
-
-    if (frame_callback_) {
-      if (++pair_log_ % 150 == 0) {
-        KFLOGF_DEBUG("Sensor", "Frames synchronized: ID=%d",
-                     depth_pending_->frame_id);
-      }
-      frame_callback_(depth_pending_);
-    } else {
-      std::lock_guard<std::mutex> qlk(pool_state_->mutex);
-      pool_state_->ready_queue.push(depth_pending_);
+void KinectSensor::onDepth(void* data, uint32_t timestamp) {
+    std::lock_guard<std::mutex> lk(sync_mutex_);
+    static int pair_log = 0;
+    
+    if (!depth_pending_) {
+        depth_pending_ = acquireFreeFrame();
+        if (!depth_pending_) return; // Pool exhausted
     }
 
     // Return rgb_pending_ to pool by clearing it (deleter will do the rest)
