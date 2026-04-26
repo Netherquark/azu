@@ -164,6 +164,8 @@ void TSDFVolume::freeGPU() {
     d_voxels_.reset();
     d_depth_.reset();
     d_rgb_.reset();
+    d_pc_is_valid_.reset();
+    d_pc_offsets_.reset();
     gpu_valid_ = false;
 }
 
@@ -180,32 +182,42 @@ void TSDFVolume::initGPU() {
 void TSDFVolume::syncToGPU() {
     if (!gpu_valid_) return;
     size_t n = voxels_.size();
-    std::vector<VoxelGPU> gpu_data(n);
-    for (size_t i = 0; i < n; ++i) {
-        gpu_data[i].tsdf   = voxels_[i].tsdf;
-        gpu_data[i].weight = voxels_[i].weight;
-        gpu_data[i].r      = voxels_[i].r;
-        gpu_data[i].g      = voxels_[i].g;
-        gpu_data[i].b      = voxels_[i].b;
+    const size_t CHUNK_SIZE = 1024 * 1024;
+    std::vector<VoxelGPU> gpu_data(std::min(n, CHUNK_SIZE));
+    for (size_t offset = 0; offset < n; offset += CHUNK_SIZE) {
+        size_t current_chunk = std::min(CHUNK_SIZE, n - offset);
+        for (size_t i = 0; i < current_chunk; ++i) {
+            size_t idx = offset + i;
+            gpu_data[i].tsdf   = voxels_[idx].tsdf;
+            gpu_data[i].weight = voxels_[idx].weight;
+            gpu_data[i].r      = voxels_[idx].r;
+            gpu_data[i].g      = voxels_[idx].g;
+            gpu_data[i].b      = voxels_[idx].b;
+        }
+        CUDA_CHECK(cudaMemcpy(d_voxels_.get() + offset, gpu_data.data(), current_chunk * sizeof(VoxelGPU), cudaMemcpyHostToDevice));
     }
-    CUDA_CHECK(cudaMemcpy(d_voxels_.get(), gpu_data.data(), n * sizeof(VoxelGPU), cudaMemcpyHostToDevice));
 }
 
 void TSDFVolume::syncFromGPU() {
     if (!gpu_valid_) return;
     size_t n = voxels_.size();
-    std::vector<VoxelGPU> gpu_data(n);
-    CUDA_CHECK(cudaMemcpy(gpu_data.data(), d_voxels_.get(), n * sizeof(VoxelGPU), cudaMemcpyDeviceToHost));
-    for (size_t i = 0; i < n; ++i) {
-        float w = gpu_data[i].weight;
-        voxels_[i].weight = w;
-        if (w > 0.001f) {
-            voxels_[i].tsdf = gpu_data[i].tsdf;
-            voxels_[i].r = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].r));
-            voxels_[i].g = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].g));
-            voxels_[i].b = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].b));
-        } else {
-            voxels_[i].tsdf = 1.0f;
+    const size_t CHUNK_SIZE = 1024 * 1024;
+    std::vector<VoxelGPU> gpu_data(std::min(n, CHUNK_SIZE));
+    for (size_t offset = 0; offset < n; offset += CHUNK_SIZE) {
+        size_t current_chunk = std::min(CHUNK_SIZE, n - offset);
+        CUDA_CHECK(cudaMemcpy(gpu_data.data(), d_voxels_.get() + offset, current_chunk * sizeof(VoxelGPU), cudaMemcpyDeviceToHost));
+        for (size_t i = 0; i < current_chunk; ++i) {
+            size_t idx = offset + i;
+            float w = gpu_data[i].weight;
+            voxels_[idx].weight = w;
+            if (w > 0.001f) {
+                voxels_[idx].tsdf = gpu_data[i].tsdf;
+                voxels_[idx].r = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].r));
+                voxels_[idx].g = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].g));
+                voxels_[idx].b = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].b));
+            } else {
+                voxels_[idx].tsdf = 1.0f;
+            }
         }
     }
 }
@@ -464,25 +476,26 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
     int res = params_.resolution;
     int total_voxels = res * res * res;
 
-    utils::CudaUniquePtr<uint32_t> d_is_valid = utils::make_cuda_unique<uint32_t>(total_voxels);
-    utils::CudaUniquePtr<uint32_t> d_offsets = utils::make_cuda_unique<uint32_t>(total_voxels);
+    if (!d_pc_is_valid_) d_pc_is_valid_ = utils::make_cuda_unique<uint32_t>(total_voxels);
+    if (!d_pc_offsets_) d_pc_offsets_ = utils::make_cuda_unique<uint32_t>(total_voxels);
 
     dim3 block(8, 8, 8);
     dim3 grid((res + block.x - 1) / block.x, (res + block.y - 1) / block.y, (res + block.z - 1) / block.z);
 
-    classifyVoxelKernel<<<grid, block>>>(d_voxels_.get(), res, d_is_valid.get());
+    classifyVoxelKernel<<<grid, block>>>(d_voxels_.get(), res, d_pc_is_valid_.get());
     CUDA_CHECK_LAST();
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Use Thrust for exclusive scan to get compaction offsets
-    thrust::device_ptr<uint32_t> d_ptr_valid(d_is_valid.get());
-    thrust::device_ptr<uint32_t> d_ptr_offsets(d_offsets.get());
+    thrust::device_ptr<uint32_t> d_ptr_valid(d_pc_is_valid_.get());
+    thrust::device_ptr<uint32_t> d_ptr_offsets(d_pc_offsets_.get());
     thrust::exclusive_scan(d_ptr_valid, d_ptr_valid + total_voxels, d_ptr_offsets);
 
     uint32_t total_points = 0;
     uint32_t last_valid, last_offset;
-    CUDA_CHECK(cudaMemcpy(&last_valid, d_is_valid.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(&last_offset, d_offsets.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpyAsync(&last_valid, d_pc_is_valid_.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost, 0));
+    CUDA_CHECK(cudaMemcpyAsync(&last_offset, d_pc_offsets_.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost, 0));
+    CUDA_CHECK(cudaStreamSynchronize(0));
     total_points = last_offset + last_valid;
 
     if (total_points == 0) return;
@@ -491,7 +504,7 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
     utils::CudaUniquePtr<uchar3> d_out_colors = utils::make_cuda_unique<uchar3>(total_points);
 
     compactPointsKernel<<<grid, block>>>(
-        d_voxels_.get(), d_is_valid.get(), d_offsets.get(),
+        d_voxels_.get(), d_pc_is_valid_.get(), d_pc_offsets_.get(),
         res, params_.voxel_size, 
         make_float3(params_.origin.x(), params_.origin.y(), params_.origin.z()),
         d_out_points.get(), d_out_colors.get()

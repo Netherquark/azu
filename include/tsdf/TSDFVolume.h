@@ -140,6 +140,11 @@ private:
     utils::CudaUniquePtr<VoxelGPU> d_voxels_; 
     utils::CudaUniquePtr<float> d_depth_;
     utils::CudaUniquePtr<uint8_t> d_rgb_;
+    
+    // Cached buffers for point cloud extraction
+    mutable utils::CudaUniquePtr<uint32_t> d_pc_is_valid_;
+    mutable utils::CudaUniquePtr<uint32_t> d_pc_offsets_;
+    
     bool    gpu_valid_ = false;
 #endif
     bool    gpu_enabled_ = false;

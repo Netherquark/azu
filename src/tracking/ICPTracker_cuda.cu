@@ -27,6 +27,94 @@
 namespace kfusion {
 namespace tracking {
 
+__device__ uchar3 float3_to_rgb(float3 c) { return make_uchar3((uint8_t)fminf(255.f, fmaxf(0.f, c.x*255.f)), (uint8_t)fminf(255.f, fmaxf(0.f, c.y*255.f)), (uint8_t)fminf(255.f, fmaxf(0.f, c.z*255.f))); }
+
+__global__ void applyCASKernel(uchar3* d_rgb, int width, int height, float sharpness) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x < 1 || x >= width - 1 || y < 1 || y >= height - 1) return;
+
+    auto get = [&](int dx, int dy) {
+        uchar3 c = d_rgb[(y+dy)*width + (x+dx)];
+        return make_float3(c.x/255.f, c.y/255.f, c.z/255.f);
+    };
+
+    float3 b = get(0, -1); 
+    float3 d = get(-1,  0); float3 e = get(0,  0); float3 f = get(1,  0);
+    float3 h = get(0,  1); 
+
+    float3 minRGB = make_float3(
+        fminf(fminf(fminf(b.x, d.x), fminf(e.x, f.x)), h.x),
+        fminf(fminf(fminf(b.y, d.y), fminf(e.y, f.y)), h.y),
+        fminf(fminf(fminf(b.z, d.z), fminf(e.z, f.z)), h.z)
+    );
+    float3 maxRGB = make_float3(
+        fmaxf(fmaxf(fmaxf(b.x, d.x), fmaxf(e.x, f.x)), h.x),
+        fmaxf(fmaxf(fmaxf(b.y, d.y), fmaxf(e.y, f.y)), h.y),
+        fmaxf(fmaxf(fmaxf(b.z, d.z), fmaxf(e.z, f.z)), h.z)
+    );
+
+    float3 min_p = make_float3(fminf(minRGB.x, 1.0f - maxRGB.x), fminf(minRGB.y, 1.0f - maxRGB.y), fminf(minRGB.z, 1.0f - maxRGB.z));
+    float3 w = make_float3(sqrtf(min_p.x), sqrtf(min_p.y), sqrtf(min_p.z));
+    w.x = w.x * sharpness * -0.125f; w.y = w.y * sharpness * -0.125f; w.z = w.z * sharpness * -0.125f;
+
+    float3 out;
+    out.x = (b.x*w.x + d.x*w.x + f.x*w.x + h.x*w.x + e.x) / (1.0f + 4.0f*w.x);
+    out.y = (b.y*w.y + d.y*w.y + f.y*w.y + h.y*w.y + e.y) / (1.0f + 4.0f*w.y);
+    out.z = (b.z*w.z + d.z*w.z + f.z*w.z + h.z*w.z + e.z) / (1.0f + 4.0f*w.z);
+
+    d_rgb[y*width + x] = float3_to_rgb(out);
+}
+
+// ---------------------------------------------------------------------------
+// GPU-Based Pyramid Generation (Downsampling)
+// ---------------------------------------------------------------------------
+__global__ void downsampleKernel(
+    const float3* v_src, const float3* n_src,
+    int src_w, int src_h,
+    float3* v_dst, float3* n_dst,
+    int dst_w, int dst_h)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= dst_w || y >= dst_h) return;
+
+    int sx = x * 2;
+    int sy = y * 2;
+
+    float3 v_sum = make_float3(0,0,0);
+    float3 n_sum = make_float3(0,0,0);
+    int count = 0;
+
+    for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+            int sidx = (sy + dy) * src_w + (sx + dx);
+            float3 v = v_src[sidx];
+            float3 n = n_src[sidx];
+            if (v.z > 0.0f && n.x*n.x + n.y*n.y + n.z*n.z > 0.5f) {
+                v_sum.x += v.x; v_sum.y += v.y; v_sum.z += v.z;
+                n_sum.x += n.x; n_sum.y += n.y; n_sum.z += n.z;
+                count++;
+            }
+        }
+    }
+
+    int didx = y * dst_w + x;
+    if (count > 0) {
+        v_dst[didx] = make_float3(v_sum.x/count, v_sum.y/count, v_sum.z/count);
+        float len = sqrtf(n_sum.x*n_sum.x + n_sum.y*n_sum.y + n_sum.z*n_sum.z);
+        if (len > 1e-6f) {
+            n_dst[didx] = make_float3(n_sum.x/len, n_sum.y/len, n_sum.z/len);
+        } else {
+            n_dst[didx] = make_float3(0,0,0);
+        }
+    } else {
+        v_dst[didx] = make_float3(0,0,0);
+        n_dst[didx] = make_float3(0,0,0);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hessian Reduction Kernel
 // Parallelized over live frame pixels
