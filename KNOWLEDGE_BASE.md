@@ -121,8 +121,11 @@ The system orchestrates four primary threads managed by `PipelineController`:
 - **Modes**: `PointCloud` (live-tracking debug) and `Mesh` (global reconstruction).
 - **Optimization**: Normal matrices are pre-computed on the CPU to avoid expensive `transpose(inverse())` calls in the vertex shader.
 
-#### OrbitCamera.h
-- Implements mouse-driven rotation, zoom, and pan for the 3D viewport.
+#### Camera.h / .cpp
+- **Unified Camera System**: Supports both **Orbit** (Blender-like) and **Free** (WASD flight) navigation modes.
+- **Unified State**: Maintains a single set of Euler angles (`yaw_`, `pitch_`, `roll_`) and position, ensuring seamless transitions between modes.
+- **Physics Engine**: Implements frame-rate independent movement using `deltaTime`, providing consistent traversal speed across varying hardware performance.
+- **Interaction**: Features axis-locked panning (X, Y, Z) and dedicated UI slider binding.
 
 ---
 
@@ -153,11 +156,17 @@ The system orchestrates four primary threads managed by `PipelineController`:
 
 ---
 
-## 4. Pending Tasks & Stubs
+## 4. Interaction & Controls
 
-Current state based on codebase audit:
-
----
+| Input | Action | Mode |
+|---|---|---|
+| **LMB Drag** | Rotate | Orbit / Free (Head-turn) |
+| **RMB Drag** | Pan | Orbit / Free |
+| **Wheel** | Zoom / Move | Orbit (Dist) / Free (Fwd/Bwd) |
+| **W/A/S/D/Q/E**| Traversal | Free Mode |
+| **Tab** | Toggle Mode | Orbit <-> Free |
+| **F** | Focus Target | Orbit Mode (Reset to origin) |
+| **X/Y/Z** | Axis Lock | Panning (Hold while dragging RMB) |
 
 ---
 

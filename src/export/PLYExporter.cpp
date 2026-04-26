@@ -28,6 +28,7 @@ bool PLYExporter::writeBinary(const meshing::MeshData& mesh,
     // Write ASCII header
     f << "ply\n";
     f << "format binary_little_endian 1.0\n";
+    f << "comment KinectFusionQt export\n";
     f << "element vertex " << nvert << "\n";
     f << "property float x\n";
     f << "property float y\n";
@@ -38,12 +39,12 @@ bool PLYExporter::writeBinary(const meshing::MeshData& mesh,
         f << "property float nz\n";
     }
     if (has_color) {
-        f << "property uchar red\n";
-        f << "property uchar green\n";
-        f << "property uchar blue\n";
+        f << "property uint8 red\n";
+        f << "property uint8 green\n";
+        f << "property uint8 blue\n";
     }
     f << "element face " << nface << "\n";
-    f << "property list uchar uint vertex_indices\n";
+    f << "property list uint8 int32 vertex_indices\n";
     f << "end_header\n";
 
     // Write vertex data

@@ -7,8 +7,8 @@ These parameters filter the raw depth data before it enters the tracking or inte
 
 | Parameter | UI Label | Range | Default | Significance |
 | :--- | :--- | :--- | :--- | :--- |
-| `min_depth` | Depth min (m) | 0.01 - 3.0 | 0.05 | Filters out sensor noise very close to the lens. |
-| `max_depth` | Depth max (m) | 0.2 - 12.0 | 8.0 | Filters out background objects to focus on the target. |
+| `min_depth` | Depth min (m) | 0.01 - 3.0 | 0.30 | Filters out sensor noise very close to the lens. |
+| `max_depth` | Depth max (m) | 0.2 - 12.0 | 2.50 | Filters out background objects to focus on the target. |
 
 ---
 

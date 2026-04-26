@@ -1,42 +1,34 @@
-# Adversarial Review & Regression Report: Preview Navigation Update
+# Regression & Stability Review: Resolved
 
-This document provides a critical analysis of the recent camera navigation changes, identifying functional regressions and logical inconsistencies introduced during the transition from `OrbitCamera` to the unified `Camera` system.
+This document tracks the resolution of previously identified functional regressions and logical inconsistencies introduced during the transition to the unified `Camera` system and the high-performance pipeline refactor.
 
-## 1. Regression: UI Sliders Desync in Free Mode
-**Status: MAJOR ERROR**
-- **Problem:** The newly added XYZ Sliders in the `ControlPanel` are logically tied to `azimuth_`, `elevation_`, and `roll_`. While these variables are updated and used in `Orbit` mode, they are **completely ignored** in `Free` mode, which relies on `yaw_` and `pitch_`.
-- **Symptoms:** 
-  1. Dragging a slider while in "Free Mode" (WASD flight) results in no visual change in the viewport.
-  2. Looking around with the mouse in "Free Mode" does not update the sliders, as mouse-look updates `yaw_`/`pitch_` while the sliders continue to reflect the stale `azimuth_`/`elevation_` values from the last Orbit state.
-- **Rationale:** The `Camera` class maintains two separate sets of state variables for rotation. This "Dual-State" architecture creates a split-brain problem where UI components only talk to one half of the camera's logic.
+## 1. Resolved: UI Sliders Desync (Split-State Problem)
+**Status: FIXED**
+- **Problem:** The `Camera` class previously maintained dual sets of variables (`azimuth`/`elevation` for Orbit and `yaw`/`pitch` for Free mode).
+- **Resolution:** The `Camera` class has been refactored to use a unified state (`yaw_`, `pitch_`, `roll_`). Both Orbit and Free modes now operate on these shared variables. The UI sliders are bi-directionally bound to these values, ensuring consistency regardless of the active navigation mode.
 
-## 2. Regression: WASD Movement Does Not Update UI
-**Status: MINOR ERROR**
-- **Problem:** `OpenGLWidget::updatePhysics()` (the WASD loop) updates the camera position/rotation but never emits the `cameraRotated` signal.
-- **Symptoms:** Even if the logic were synced (Issue #1), flying through space would leave the UI sliders static, leading to a disconnect between the 3D state and the 2D control surface.
-- **Rationale:** The signal emission was only added to the `mouseMoveEvent`, neglecting the asynchronous nature of the `QTimer`-driven physics loop.
+## 2. Resolved: WASD Movement UI Sync
+**Status: FIXED**
+- **Problem:** Camera updates during WASD movement (physics loop) were not being reported back to the UI.
+- **Resolution:** `OpenGLWidget::updatePhysics()` now explicitly emits the `cameraRotated` signal whenever the camera position or orientation changes, keeping the `ControlPanel` sliders in perfect sync with the 3D viewport.
 
-## 3. Inconsistency: 'Z' Axis Lock Behavior
-**Status: DESIGN FLAW**
-- **Problem:** In `Orbit` mode, holding 'X' or 'Y' while right-clicking pans the **Target**. However, holding 'Z' switches the behavior to **Zooming** (`distance_`).
-- **Symptoms:** This violates the principle of least astonishment. A user holding 'Z' expects to translate the scene along the depth axis (panning the target), not to change the focal distance of the orbit.
-- **Rationale:** The implementation shortcutted "depth movement" to "zoom" instead of performing a true 3D translation along the world Z-axis.
+## 3. Resolved: 'Z' Axis Lock Behavior
+**Status: FIXED**
+- **Problem:** The 'Z' key previously triggered "Zoom" instead of a true Z-axis translation.
+- **Resolution:** The axis-lock logic in `OpenGLWidget::mouseMoveEvent` has been corrected. Holding 'Z' now performs a true 3D translation along the world Z-axis using `camera().move(Eigen::Vector3f(0.0f, 0.0f, 1.0f), ...)`, matching the 'X' and 'Y' behavior for consistent panning.
 
-## 4. Technical Debt: Lack of Delta-Time in Physics
-**Status: PERFORMANCE REGRESSION**
-- **Problem:** WASD movement speed is hardcoded to `0.05f` meters per tick.
-- **Symptoms:** On a high-refresh monitor or during heavy CPU load (ICP processing), the "flight" speed will vary wildly.
-- **Rationale:** The `QTimer` interval is assumed to be constant, but Qt timers are not real-time guaranteed. This leads to frame-rate-dependent gameplay/navigation.
+## 4. Resolved: Frame-Rate Independent Physics
+**Status: FIXED**
+- **Problem:** Camera movement speed was hardcoded to a fixed value per tick, causing variable speeds on different hardware.
+- **Resolution:** Implemented `deltaTime` calculation using `QElapsedTimer` (via `frame_timer_.restart()`). The movement speed is now defined in meters per second (`2.0f m/s`), ensuring consistent traversal regardless of UI framerate or ICP processing load.
 
-## 5. Potential Bug: Numerical Instability in Transitions
-**Status: EDGE CASE**
-- **Problem:** `Camera::updateFreeFromOrbit()` uses `std::asin(forward.y())`. 
-- **Symptoms:** If `forward.y()` slightly exceeds 1.0 due to floating point drift, `asin` returns `NaN`, potentially "breaking" the camera (black screen) when switching from Orbit to Free mode at steep angles.
-- **Rationale:** Although a `clamp` was added in a later iteration, the dependency on `std::atan2` and `std::asin` for state conversion is prone to precision issues compared to a unified Transform or Quaternion representation.
+## 5. Resolved: Transition Instability (NaN Fix)
+**Status: FIXED**
+- **Problem:** State conversion using `std::asin` was prone to `NaN` errors at steep angles.
+- **Resolution:** The conversion logic in `Camera::updateFreeFromOrbit` and `updateOrbitFromFree` has been simplified to use direct trigonometric projections (`cos`/`sin`) and forward vector calculation, eliminating the risky inverse trigonometric calls.
 
 ---
 
 ## Conclusion
-While the "Blender-like" features significantly improve the potential for navigation, the current implementation has introduced a **Split-State Regression**. The UI is currently a "read-only" or "orbit-only" display that loses its meaning as soon as the user enters Free mode. 
+The "Blender-like" navigation system is now technically sound and fully integrated with the UI. The "Split-State" regression has been eliminated, and the physics engine is now robust against framerate fluctuations.
 
-**Recommendation:** The `Camera` class should be refactored to use a single set of rotation variables (Pitch/Yaw/Roll) that both modes share, or the conversion functions must be called more aggressively to keep the UI in sync.

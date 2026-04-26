@@ -106,11 +106,16 @@ make -j$(nproc)
 3. Click **▶ Start Capture** — the pipeline will begin live tracking and volume integration.
 4. **Scan**: Move the Kinect slowly and steadily around your target object.
 5. **View**: Toggle between **Point Cloud** and **Mesh** modes to inspect quality in real-time.
-6. **Export**: Once satisfied, click **Export PLY** or **Export GLB**.
+6. **Navigate**: Use **Blender-like** controls for inspection:
+   - **LMB**: Orbit around target.
+   - **RMB + X/Y/Z**: Axis-locked panning.
+   - **Tab**: Switch to **Free Flight** (WASD + Q/E to fly).
+   - **F**: Focus back on the origin.
+7. **Export**: Once satisfied, click **Export PLY** or **Export GLB**.
 
 ### Optimization Tips
 
-- **Range**: Maintain a distance of 0.5m to 2.5m for optimal depth precision.
+- **Range**: Maintain a distance of **0.3m to 2.5m** for optimal depth precision (tunable via **Depth min/max** sliders).
 - **Lighting**: Ensure consistent, non-flickering lighting for robust RGB-based ICP tracking.
 - **Volume**: The default reconstruction cube is 2.56m. You can adjust the `origin` and `voxel_size` in `include/tsdf/TSDFVolume.h` for smaller objects (e.g., set `voxel_size` to 0.005 for 5mm precision).
 - **Tracking Lost**: If tracking is lost (indicated in the status panel), click **Reset** to clear the volume and start a new scan.

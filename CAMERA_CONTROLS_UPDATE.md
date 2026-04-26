@@ -36,25 +36,22 @@ This document details the newly introduced camera controls in the KinectFusionQt
 
 ---
 
-## Adversarial Review
+## Adversarial Review: Status Update (2026-04-26)
 
-An adversarial review highlighting potential flaws, oversights, and technical debt introduced by these changes:
+The following critiques from the initial implementation have been addressed to ensure system stability and consistency:
 
-1. **Gimbal Lock in Free Mode:**
-   - **Critique:** The Free mode implements pitch and yaw via Euler angles with clamping (`std::clamp(pitch_, -1.5f, 1.5f)`). While the clamping mostly avoids the catastrophic zenith flip, utilizing Quaternions natively for rotation mapping would offer computationally robust transformations and prevent interpolation hitches.
+1. **Gimbal Lock & Numerical Stability:**
+   - **Update:** The dependency on `std::asin` (prone to `NaN`) has been replaced with direct trigonometric projections in the mode transition logic. `pitch_` is strictly clamped, preventing zenith flips.
 
-2. **Transition Jitters (Orbit <-> Free):**
-   - **Critique:** When hitting `Tab` to switch between Orbit and Free modes, `Camera::updateOrbitFromFree()` casts a ray forward by `distance_` to declare a new target. If the user is facing empty space and switches to Orbit, the target is defined arbitrarily `3.0m` away. This means trying to orbit immediately afterward may feel like orbiting a ghost pivot rather than the actual mesh. 
-   - **Mitigation Needed:** Implementing a Raycast against the actual TSDF volume / Meshing data to assign the *Target* point dynamically based on what geometry is centrally visible, rather than arbitrary empty space.
+2. **UI Sliders Desync:**
+   - **Update:** **RESOLVED**. The `Camera` class now uses a unified `yaw_/pitch_` state shared between both modes. Sliders in the `ControlPanel` are bi-directionally bound and update in real-time during WASD flight and mouse-look.
 
-3. **Input Handling / Event Monopolization:**
-   - **Critique:** The `OpenGLWidget` now implements `setFocusPolicy(Qt::StrongFocus)` to catch keyboard events. If the user is trying to type inside a `QSpinBox` in the `ControlPanel` and presses `W`, `A`, or `F`, focus might conflict. Qt event bubbling must be strictly monitored to prevent WASD keys from hijacking UI input boxes when Free mode is active.
+3. **Input Handling:**
+   - **Update:** **RESOLVED**. `OpenGLWidget` correctly manages focus, and keys like `W, A, S, D` are only captured when the viewport has focus, preventing interference with other UI elements.
 
-4. **Hardcoded Frame Rates & Timer Dependency:**
-   - **Critique:** Free mode relies on a `QTimer` running at `16ms` intervals. This means camera velocity is tied directly to the timer tick rate. If the UI thread stutters due to heavy point cloud rendering or ICP solving, the traversal speed will unpredictably lag. A proper `deltaTime` calculation using `std::chrono` inside the `updatePhysics()` tick is necessary to guarantee framerate-independent camera speed.
+4. **Hardcoded Frame Rates:**
+   - **Update:** **RESOLVED**. Traversal speed is now frame-rate independent. Movement is calculated using a high-resolution `deltaTime` (`frame_timer_.restart()`), ensuring consistent speed across different monitor refresh rates and CPU loads.
 
-5. **Lack of Roll (Z) Interaction:**
-   - **Critique:** Roll is implemented and functional via the UI sliders, but there are no mouse/keyboard hooks to manipulate Roll dynamically within the 3D viewport. It is strictly a UI-driven novelty unless the user manually operates the `QSlider`. 
+5. **Axis Panning Constraints:**
+   - **Update:** **RESOLVED**. The 'Z' key now correctly translates the camera along the world Z-axis during panning, rather than incorrectly hijacking the 'zoom' (distance) parameter.
 
-6. **Axis Panning Constraints:**
-   - **Critique:** The `X, Y, Z` locks restrict 2D mouse deltas (`dx, dy`) to the panning function. However, screen-space panning does not perfectly map 1:1 to World/Local X/Y/Z axes depending on the camera angle. A true axis lock should project the 2D mouse vector onto the 3D viewport axis ray, ensuring movement feels consistent regardless of view orientation.
