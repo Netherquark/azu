@@ -209,6 +209,7 @@ void PipelineController::reset() {
     {
         std::lock_guard<std::mutex> lk(pose_mutex_);
         current_pose_ = Eigen::Matrix4f::Identity();
+        last_pose_ = Eigen::Matrix4f::Identity();
     }
     first_frame_  = true;
     frame_count_  = 0;
@@ -342,10 +343,9 @@ void PipelineController::trackingLoop() {
             
             // Motion Model: predicted = current * (last_delta)
             // last_delta = last_pose.inv * current_pose
-            static Eigen::Matrix4f last_pose = Eigen::Matrix4f::Identity();
-            Eigen::Matrix4f delta = last_pose.inverse() * current_pose_;
+            Eigen::Matrix4f delta = last_pose_.inverse() * current_pose_;
             predicted_pose = current_pose_ * delta;
-            last_pose = current_pose_;
+            last_pose_ = current_pose_;
         }
 
         tracking::ICPResult icp_result;
@@ -520,6 +520,7 @@ void PipelineController::meshingLoop() {
             continue;
         }
         mesh_extraction_requested_.store(false);
+        is_meshing_.store(true);
 
         mesh_extract_progress_.store(0.0f);
         KFLOG_INFO("Pipeline", "Marching cubes: mesh extraction started (CPU/GPU path)");
@@ -551,6 +552,7 @@ void PipelineController::meshingLoop() {
             KFLOG_WARN("Pipeline", "Mesh extraction produced empty mesh (scan more surface or check TSDF fill)");
             if (mesh_ready_cb_) mesh_ready_cb_();
         }
+        is_meshing_.store(false);
     }
 }
 
@@ -561,15 +563,11 @@ bool PipelineController::exportPLY(const std::string& path) {
         std::cout << "[Pipeline] No mesh yet, extracting via meshingLoop...\n";
         mesh_extraction_requested_.store(true);
         int waits = 0;
-        while (waits < 100) {
-            auto m = shared_mesh_.snapshot(ver);
-            if (m && !m->empty()) {
-                mesh = m;
-                break;
-            }
+        while (waits < 100 && (mesh_extraction_requested_.load() || is_meshing_.load())) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             waits++;
         }
+        mesh = shared_mesh_.snapshot(ver);
     }
     if (!mesh || mesh->empty()) {
         std::cerr << "[Pipeline] No mesh to export — scan more frames first.\n";
@@ -594,15 +592,11 @@ bool PipelineController::exportGLB(const std::string& path) {
         std::cout << "[Pipeline] No mesh yet, extracting via meshingLoop...\n";
         mesh_extraction_requested_.store(true);
         int waits = 0;
-        while (waits < 100) {
-            auto m = shared_mesh_.snapshot(ver);
-            if (m && !m->empty()) {
-                mesh = m;
-                break;
-            }
+        while (waits < 100 && (mesh_extraction_requested_.load() || is_meshing_.load())) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             waits++;
         }
+        mesh = shared_mesh_.snapshot(ver);
     }
     if (!mesh || mesh->empty()) {
         std::cerr << "[Pipeline] No mesh to export — scan more frames first.\n";

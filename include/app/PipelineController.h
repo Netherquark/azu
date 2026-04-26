@@ -89,6 +89,7 @@ private:
     // State
     std::atomic<PipelineState> state_{PipelineState::Idle};
     Eigen::Matrix4f            current_pose_;
+    Eigen::Matrix4f            last_pose_{Eigen::Matrix4f::Identity()};
     std::mutex                 pose_mutex_;
 
     // Metrics
@@ -142,6 +143,7 @@ private:
 
     // Mesh extraction trigger
     std::atomic<bool>                     mesh_extraction_requested_{false};
+    std::atomic<bool>                     is_meshing_{false};
     std::atomic<float>                    mesh_extract_progress_{0.0f};
     std::atomic<float>                    export_progress_{0.0f};
     std::atomic<bool>                     use_gpu_{false};

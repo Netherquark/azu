@@ -166,6 +166,12 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
                     if (vox.weight > 0.0f) {
                         float tsdf = vox.tsdf;
                         if (prev_tsdf > 0.0f && tsdf <= 0.0f) {
+                            if (prev_tsdf == 1.0f) {
+                                // Camera inside truncation region or invalid start, skip
+                                prev_tsdf = tsdf;
+                                t += vs * 0.5f;
+                                continue;
+                            }
                             float t_hit = t - (0.5f * vs) * tsdf / (tsdf - prev_tsdf + 1e-6f);
                             Eigen::Vector3f hit_world = cam_origin + ray_world * t_hit;
                             vertices_out[out_idx] = hit_world;

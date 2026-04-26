@@ -32,7 +32,7 @@ void Camera::pan(float dx, float dy) {
         float cos_p = std::cos(pitch_);
 
         Eigen::Vector3f right(cos_y, 0.0f, -sin_y);
-        Eigen::Vector3f up(-sin_y * std::sin(pitch_), cos_p, -cos_y * std::sin(pitch_));
+        Eigen::Vector3f up(sin_y * std::sin(pitch_), cos_p, cos_y * std::sin(pitch_));
 
         target_ += right * (-dx * 0.005f * distance_)
                  + up    * (-dy * 0.005f * distance_);
@@ -83,7 +83,7 @@ void Camera::updateFreeFromOrbit() {
 
     Eigen::Vector3f offset(
         distance_ * cos_p * sin_y,
-        distance_ * sin_p,
+        -distance_ * sin_p,
         distance_ * cos_p * cos_y
     );
     position_ = target_ + offset;
