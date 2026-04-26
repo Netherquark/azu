@@ -5,6 +5,7 @@
 #include "export/GLBExporter.h"
 #include "export/PLYExporter.h"
 #include "utils/Logger.h"
+#include "sensor/SuperResolution.h"
 #include <QCoreApplication>
 #include <iostream>
 #include <sstream>
@@ -268,6 +269,10 @@ void PipelineController::trackingLoop() {
             raw = raw_queue_.front();
             raw_queue_.pop();
         }
+
+        // Apply Zero-Latency CPU Super-Resolution (CAS)
+        // Enhance the raw RGB buffer *before* it's paired with 3D depth meshes natively
+        sensor::sr::applyCAS(raw->rgb, sensor::FRAME_W, sensor::FRAME_H, 0.85f);
 
         // Build processed frame here (using pool)
         auto frame = acquireFreeData();
