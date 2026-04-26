@@ -174,7 +174,7 @@ __global__ void computeHessianKernel(
                     float3 v_model_world = model_vertices[midx];
                     float3 n_model_world = model_normals[midx];
 
-                    if (v_model_world.z > 0.0f && n_model_world.x*n_model_world.x + n_model_world.y*n_model_world.y + n_model_world.z*n_model_world.z > 0.5f) {
+                    if (v_model_world.z > 0.0f && (n_model_world.x*n_model_world.x + n_model_world.y*n_model_world.y + n_model_world.z*n_model_world.z) > 0.9f) {
                         float3 v_model;
                         v_model.x = rw00 * v_model_world.x + rw01 * v_model_world.y + rw02 * v_model_world.z + twx;
                         v_model.y = rw10 * v_model_world.x + rw11 * v_model_world.y + rw12 * v_model_world.z + twy;
@@ -412,8 +412,22 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
 
         if (inliers < 10) break;
 
-        // Solve update with Tikhonov regularization
-        A += Eigen::Matrix<float,6,6>::Identity() * 0.1f;
+        // Solve update with adaptive Tikhonov regularization (Levenberg-Marquardt style)
+        float damping = 0.1f;
+        if (level == 0) damping = 0.01f; // Finer levels need less damping if close to convergence
+
+        // Numerical Integrity Check: Check Hessian condition number
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float,6,6>> es(A);
+        float min_eig = es.eigenvalues().minCoeff();
+        float max_eig = es.eigenvalues().maxCoeff();
+        float cond = (min_eig > 0) ? (max_eig / min_eig) : 1e10f;
+
+        // If system is extremely ill-conditioned, tracking is unreliable (e.g. flat wall)
+        if (cond > 1e7f || min_eig < 1e-4f) {
+            damping = 1.0f; // Increase damping to stabilize
+        }
+
+        A += Eigen::Matrix<float,6,6>::Identity() * damping;
         Eigen::Matrix<float,6,1> update = A.ldlt().solve(b);
 
         // Reject NaNs or catastrophically large translational updates (>20cm per iteration)
@@ -421,10 +435,15 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
             break;
         }
 
+        // Robustness: Detect erratic updates (too much rotation in one step)
+        if (update.segment<3>(3).norm() > 0.5f) { // ~30 degrees per iteration
+            break;
+        }
+
         // Update pose (Rodrigues approximation)
         float rot_norm = update.segment<3>(3).norm();
         Eigen::Matrix3f dR = Eigen::Matrix3f::Identity();
-        if (rot_norm > 1e-4f) {
+        if (rot_norm > 1e-6f) {
             dR = Eigen::AngleAxisf(rot_norm, update.segment<3>(3).normalized()).toRotationMatrix();
         } else {
             dR(0,1) = -update(5); dR(0,2) =  update(4);

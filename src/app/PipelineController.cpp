@@ -401,32 +401,58 @@ void PipelineController::trackingLoop() {
     bool is_lost = (state_.load() == PipelineState::TrackingLost);
 
     if (is_lost) {
-      // RELOCALIZATION MODE: Try harder to catch the pose
+      // RELOCALIZATION MODE: Multi-hypothesis search
       tracking::ICPParams recovery_params = hyperparams_.icp;
-      recovery_params.dist_threshold *= 3.0f; // 30cm instead of 10cm
-      recovery_params.angle_threshold = 60.0f;
+      recovery_params.dist_threshold *= 2.5f; 
+      recovery_params.angle_threshold = 45.0f;
+      
+      // Increase iterations for recovery
+      for (int l = 0; l < sensor::FramePyramid::LEVELS; ++l) {
+          recovery_params.max_iterations[l] *= 2;
+      }
 
-      // Backup original params
       tracking::ICPParams original_params = tracker_->params();
       tracker_->setParams(recovery_params);
 
-      // Try relocalizing at the coarsest level first with more iterations
-      if (use_gpu_.load()) {
-#ifdef CUDA_ENABLED
-        icp_result = tracker_->trackGPU(
-            preprocessor_->getGPUDepthMeters(),
-            preprocessor_->getGPURgb(),
-            frame->width, frame->height,
-            *model_ref, prev_pose, prev_pose
-        );
-#endif
-      } else {
-        sensor::FramePyramid pyramid;
-        sensor::buildFramePyramid(*frame, pyramid);
-        icp_result = tracker_->track(pyramid, *model_ref, prev_pose, prev_pose);
-      }
+      // Hypothesis 1: Last known pose
+      Eigen::Matrix4f h1_pose = prev_pose;
+      
+      // Hypothesis 2: Small forward motion (assuming user is moving towards object)
+      Eigen::Matrix4f h2_pose = prev_pose;
+      h2_pose(2,3) += 0.05f; 
 
-      // Restore params
+      // Hypothesis 3: Zero velocity (if predicted_pose was used but failed)
+      Eigen::Matrix4f h3_pose = prev_pose;
+
+      std::vector<Eigen::Matrix4f> hypotheses = {h1_pose, h2_pose, h3_pose};
+      tracking::ICPResult best_result;
+      best_result.tracking_ok = false;
+      best_result.inliers = 0;
+
+      for (const auto& h_pose : hypotheses) {
+          tracking::ICPResult res;
+          if (use_gpu_.load()) {
+#ifdef CUDA_ENABLED
+            res = tracker_->trackGPU(
+                preprocessor_->getGPUDepthMeters(),
+                preprocessor_->getGPURgb(),
+                frame->width, frame->height,
+                *model_ref, h_pose, prev_pose
+            );
+#endif
+          } else {
+            sensor::FramePyramid pyramid;
+            sensor::buildFramePyramid(*frame, pyramid);
+            res = tracker_->track(pyramid, *model_ref, h_pose, prev_pose);
+          }
+
+          if (res.tracking_ok && res.inliers > best_result.inliers) {
+              best_result = res;
+          }
+          if (best_result.tracking_ok && best_result.inliers > 5000) break; // Good enough
+      }
+      
+      icp_result = best_result;
       tracker_->setParams(original_params);
     } else {
       if (use_gpu_.load()) {
@@ -454,6 +480,25 @@ void PipelineController::trackingLoop() {
           icp_result = tracker_->track(pyramid, *model_ref, prev_pose, prev_pose);
         }
       }
+    }
+
+    // Robust Camera Path Detection: Sanity check the pose update
+    if (icp_result.tracking_ok) {
+        Eigen::Matrix4f diff = prev_pose.inverse() * icp_result.pose;
+        float trans_dist = diff.block<3,1>(0,3).norm();
+        
+        // Rodrigues rotation magnitude
+        Eigen::Matrix3f R_diff = diff.block<3,3>(0,0);
+        float trace = R_diff.trace();
+        float angle = std::acos(std::max(-1.0f, std::min(1.0f, (trace - 1.0f) / 2.0f)));
+
+        // If camera "teleported" more than 15cm or rotated more than 30 degrees in 33ms, 
+        // it's almost certainly a tracking artifact/mismatch.
+        if (trans_dist > 0.15f || angle > 0.52f) {
+            KFLOGF_WARN("Pipeline", "Pose Sanity Check FAILED: dist=%.3fm, angle=%.1f deg. Rejecting pose.", 
+                       trans_dist, angle * 180.0f / M_PI);
+            icp_result.tracking_ok = false;
+        }
     }
 
     // Update tracking fps
