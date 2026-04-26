@@ -147,7 +147,11 @@ void TSDFVolume::integrate(const float*           depth_meters,
 {
     std::unique_lock<std::shared_mutex> lk(mutex_);
 #ifdef CUDA_ENABLED
-    integrateGPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height);
+    if (gpu_enabled_) {
+        integrateGPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height);
+    } else {
+        integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height);
+    }
 #else
     integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height);
 #endif
@@ -248,18 +252,22 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
                          Eigen::Vector3f* normals_out) const
 {
 #ifdef CUDA_ENABLED
-    // In a fully GPU-resident pipeline, raycast output should stay on GPU.
-    // For now, we sync if host pointers are provided.
-    // In realistic scenarios, ICP will call raycastGPU directly.
-    static float3 *d_v = nullptr, *d_n = nullptr;
-    if (!d_v) {
-        cudaMalloc(&d_v, width * height * sizeof(float3));
-        cudaMalloc(&d_n, width * height * sizeof(float3));
+    if (gpu_enabled_) {
+        // In a fully GPU-resident pipeline, raycast output should stay on GPU.
+        // For now, we sync if host pointers are provided.
+        // In realistic scenarios, ICP will call raycastGPU directly.
+        static float3 *d_v = nullptr, *d_n = nullptr;
+        if (!d_v) {
+            cudaMalloc(&d_v, width * height * sizeof(float3));
+            cudaMalloc(&d_n, width * height * sizeof(float3));
+        }
+        const_cast<TSDFVolume*>(this)->raycastGPU(pose, fx, fy, cx, cy, width, height, d_v, d_n);
+        cudaMemcpy(vertices_out, d_v, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
+        cudaMemcpy(normals_out,  d_n, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
+        return;
     }
-    const_cast<TSDFVolume*>(this)->raycastGPU(pose, fx, fy, cx, cy, width, height, d_v, d_n);
-    cudaMemcpy(vertices_out, d_v, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
-    cudaMemcpy(normals_out,  d_n, width * height * sizeof(float3), cudaMemcpyDeviceToHost);
-#else
+#endif
+
     std::shared_lock<std::shared_mutex> lk(mutex_);
     const float step     = params_.voxel_size;        // full voxel step (faster)
     const float max_dist = params_.resolution * params_.voxel_size * 1.73f;
@@ -301,7 +309,7 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
 
                 float tsdf_val = v.tsdf;
 
-                if (prev_tsdf > 0.0f && tsdf_val <= 0.0f && prev_tsdf < 1.0f) {
+                if (prev_tsdf > 0.0f && tsdf_val <= 0.0f && prev_tsdf <= 1.0f) {
                     float alpha = prev_tsdf / (prev_tsdf - tsdf_val + 1e-6f);
                     float t_hit = prev_t + alpha * (t - prev_t);
                     Eigen::Vector3f hit_world = t_cw + ray_world * t_hit;
@@ -318,7 +326,7 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
                     float nlen = normal.norm();
 
                     Eigen::Vector3f hit_cam  = R_cw.transpose() * (hit_world - t_cw);
-                    Eigen::Vector3f norm_cam = R_cw.transpose() * ((nlen > 1e-6f) ? (normal / nlen) : Eigen::Vector3f(0,0,-1));
+                    Eigen::Vector3f norm_cam = (nlen > 1e-6f) ? (R_cw.transpose() * (normal / nlen)) : Eigen::Vector3f(0,0,-1);
 
                     vertices_out[out_idx] = hit_cam;
                     normals_out[out_idx]  = norm_cam;
@@ -330,7 +338,6 @@ void TSDFVolume::raycast(const Eigen::Matrix4f& pose,
             }
         }
     }
-#endif
 }
 
 } // namespace tsdf

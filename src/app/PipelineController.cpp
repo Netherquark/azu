@@ -74,13 +74,25 @@ bool PipelineController::start() {
     }
 
 #ifdef CUDA_ENABLED
-    tsdf_->initGPU();
-    tracker_->initGPU();
-    // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
-    for (int i = 0; i < 2; ++i) {
-        model_pingpong_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-        model_pingpong_.buffers[i]->d_normals  = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+    try {
+        tsdf_->initGPU();
+        tracker_->initGPU();
+        // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
+        for (int i = 0; i < 2; ++i) {
+            model_pingpong_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            model_pingpong_.buffers[i]->d_normals = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+        }
+        use_gpu_ = true;
+        tsdf_->setGPUEnabled(true);
+        KFLOG_INFO("Pipeline", "CUDA initialization successful — using GPU acceleration.");
+    } catch (const std::exception& e) {
+        use_gpu_ = false;
+        tsdf_->setGPUEnabled(false);
+        KFLOG_WARN("Pipeline", "CUDA initialization failed: " + std::string(e.what()) + " — falling back to CPU mode.");
     }
+#else
+    use_gpu_ = false;
+    tsdf_->setGPUEnabled(false);
 #endif
 
     // Launch pipeline threads
@@ -307,11 +319,14 @@ void PipelineController::trackingLoop() {
             prev_pose = current_pose_;
         }
 
+        tracking::ICPResult icp_result;
+        if (use_gpu_.load()) {
 #ifdef CUDA_ENABLED
-        auto icp_result = tracker_->trackGPU(pyramid, *model_ref, prev_pose);
-#else
-        auto icp_result = tracker_->track(pyramid, *model_ref, prev_pose);
+            icp_result = tracker_->trackGPU(pyramid, *model_ref, prev_pose);
 #endif
+        } else {
+            icp_result = tracker_->track(pyramid, *model_ref, prev_pose);
+        }
 
         // Update tracking fps
         auto now = steady_clock::now();

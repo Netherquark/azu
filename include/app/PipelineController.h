@@ -144,6 +144,7 @@ private:
     std::atomic<bool>                     mesh_extraction_requested_{false};
     std::atomic<float>                    mesh_extract_progress_{0.0f};
     std::atomic<float>                    export_progress_{0.0f};
+    std::atomic<bool>                     use_gpu_{false};
 
     void onRawFrame(std::shared_ptr<sensor::RawFrame> raw);
     void trackingLoop();

@@ -100,6 +100,9 @@ public:
     void* getGPUVoxels() const { return (void*)d_voxels_.get(); }
 #endif
 
+    void setGPUEnabled(bool enabled) { gpu_enabled_ = enabled; }
+    bool isGPUEnabled() const { return gpu_enabled_; }
+
 private:
     TSDFParams           params_;
     std::vector<Voxel>   voxels_;
@@ -135,6 +138,7 @@ private:
     utils::CudaUniquePtr<uint8_t> d_rgb_;
     bool    gpu_valid_ = false;
 #endif
+    bool    gpu_enabled_ = false;
 };
 
 } // namespace tsdf
