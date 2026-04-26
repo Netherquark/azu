@@ -399,9 +399,6 @@ bool SignalConditioner::processCuda(RawFrame& raw,
     CUDA_CHECK_LAST();
 
     // 5. Final meters conversion for TSDF integration (Zero-copy GPU path)
-    int total_threads = n;
-    int block_size = 256;
-    int grid_size = (total_threads + block_size - 1) / block_size;
     rawToMetersKernel<<<grid_size, block_size, 0, stream>>>(d_depth_out_.get(), d_depth_meters_.get(), n);
     CUDA_CHECK_LAST();
 
