@@ -30,6 +30,42 @@ namespace tracking {
 
 
 // ---------------------------------------------------------------------------
+// GPU-Based Vertex and Normal Generation
+// ---------------------------------------------------------------------------
+__global__ void computeVerticesKernel(const float* depth, float3* vertices, int w, int h, float fx, float fy, float cx, float cy) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= w || y >= h) return;
+    int idx = y * w + x;
+    float d = depth[idx];
+    if (d > 0.0f) vertices[idx] = make_float3((x - cx) / fx * d, (y - cy) / fy * d, d);
+    else vertices[idx] = make_float3(0, 0, 0);
+}
+
+__global__ void computeNormalsKernel(const float* depth, const float3* vertices, float3* normals, int w, int h) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x < 1 || x >= w - 1 || y < 1 || y >= h - 1) {
+        if (x < w && y < h) normals[y * w + x] = make_float3(0, 0, 0);
+        return;
+    }
+    int c = y * w + x;
+    float dc = depth[c];
+    if (dc <= 0.0f || depth[c+1] <= 0.0f || depth[c-1] <= 0.0f || depth[c-w] <= 0.0f || depth[c+w] <= 0.0f) {
+        normals[c] = make_float3(0, 0, 0); return;
+    }
+    float jump = fmaxf(0.03f, dc * 0.05f);
+    if (fabsf(dc-depth[c+1]) > jump || fabsf(dc-depth[c-1]) > jump || fabsf(dc-depth[c-w]) > jump || fabsf(dc-depth[c+w]) > jump) {
+        normals[c] = make_float3(0, 0, 0); return;
+    }
+    float3 dx = make_float3(vertices[c+1].x - vertices[c-1].x, vertices[c+1].y - vertices[c-1].y, vertices[c+1].z - vertices[c-1].z);
+    float3 dy = make_float3(vertices[c+w].x - vertices[c-w].x, vertices[c+w].y - vertices[c-w].y, vertices[c+w].z - vertices[c-w].z);
+    float3 n = make_float3(dx.y*dy.z - dx.z*dy.y, dx.z*dy.x - dx.x*dy.z, dx.x*dy.y - dx.y*dy.x);
+    float len = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
+    normals[c] = (len > 1e-6f) ? make_float3(n.x/len, n.y/len, n.z/len) : make_float3(0, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
 // GPU-Based Pyramid Generation (Downsampling)
 // ---------------------------------------------------------------------------
 __global__ void downsampleKernel(
@@ -55,7 +91,7 @@ __global__ void downsampleKernel(
             int sidx = (sy + dy) * src_w + (sx + dx);
             float3 v = v_src[sidx];
             float3 n = n_src[sidx];
-            if (v.z > 0.0f && n.x*n.x + n.y*n.y + n.z*n.z > 0.5f) {
+            if (v.z > 0.001f) {
                 v_sum.x += v.x; v_sum.y += v.y; v_sum.z += v.z;
                 n_sum.x += n.x; n_sum.y += n.y; n_sum.z += n.z;
                 count++;
@@ -101,7 +137,7 @@ __global__ void computeHessianKernel(
     float rw10, float rw11, float rw12,
     float rw20, float rw21, float rw22,
     float twx,  float twy,  float twz,
-    // Output: 21 (A) + 6 (b) + 1 (res) + 1 (inliers) + 5 (diagnostics) = 34 floats
+    // Output: 34 floats
     float* global_stats)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -122,15 +158,13 @@ __global__ void computeHessianKernel(
         float3 v_live = live_vertices[idx];
         
         if (v_live.z > 0.001f) {
-            // Transform live vertex to reference camera space
+            local_valid_live++;
             float3 v_ref;
             v_ref.x = r00 * v_live.x + r01 * v_live.y + r02 * v_live.z + tx;
             v_ref.y = r10 * v_live.x + r11 * v_live.y + r12 * v_live.z + ty;
             v_ref.z = r20 * v_live.x + r21 * v_live.y + r22 * v_live.z + tz;
 
             if (v_ref.z > 0.001f) {
-                local_valid_live++;
-                // Project into reference model
                 int mx = __float2int_rd(fx * v_ref.x / v_ref.z + cx + 0.5f);
                 int my = __float2int_rd(fy * v_ref.y / v_ref.z + cy + 0.5f);
 
@@ -140,9 +174,7 @@ __global__ void computeHessianKernel(
                     float3 v_model_world = model_vertices[midx];
                     float3 n_model_world = model_normals[midx];
 
-                    if (v_model_world.x * v_model_world.x + v_model_world.y * v_model_world.y + v_model_world.z * v_model_world.z > 1e-6f &&
-                        n_model_world.x * n_model_world.x + n_model_world.y * n_model_world.y + n_model_world.z * n_model_world.z > 1e-6f) { // validity check
-                        // Transform world model point/normal to reference camera space
+                    if (v_model_world.z > 0.0f && n_model_world.x*n_model_world.x + n_model_world.y*n_model_world.y + n_model_world.z*n_model_world.z > 0.5f) {
                         float3 v_model;
                         v_model.x = rw00 * v_model_world.x + rw01 * v_model_world.y + rw02 * v_model_world.z + twx;
                         v_model.y = rw10 * v_model_world.x + rw11 * v_model_world.y + rw12 * v_model_world.z + twy;
@@ -154,7 +186,6 @@ __global__ void computeHessianKernel(
                         n_model.z = rw20 * n_model_world.x + rw21 * n_model_world.y + rw22 * n_model_world.z;
 
                         local_valid_model++;
-                        // Correspondence checks
                         float dx = v_ref.x - v_model.x;
                         float dy = v_ref.y - v_model.y;
                         float dz = v_ref.z - v_model.z;
@@ -162,7 +193,6 @@ __global__ void computeHessianKernel(
 
                         if (dist_sq < dist_thresh * dist_thresh) {
                             float3 n_live = live_normals[idx];
-                            // Rotate live normal to ref space
                             float3 n_live_ref;
                             n_live_ref.x = r00 * n_live.x + r01 * n_live.y + r02 * n_live.z;
                             n_live_ref.y = r10 * n_live.x + r11 * n_live.y + r12 * n_live.z;
@@ -170,12 +200,7 @@ __global__ void computeHessianKernel(
 
                             float dot = n_live_ref.x * n_model.x + n_live_ref.y * n_model.y + n_live_ref.z * n_model.z;
                             if (fabsf(dot) > angle_thresh_cos) {
-                                // Point-to-plane error
                                 float err = n_model.x * dx + n_model.y * dy + n_model.z * dz;
-                                
-                                // Jacobian in current (live) camera space
-                                // J = [n_model_in_live; cross(v_live, n_model_in_live)]
-                                // Rotate n_model back to live space: n_model_live = R_rel^T * n_model
                                 float3 n_model_live;
                                 n_model_live.x = r00 * n_model.x + r10 * n_model.y + r20 * n_model.z;
                                 n_model_live.y = r01 * n_model.x + r11 * n_model.y + r21 * n_model.z;
@@ -187,13 +212,11 @@ __global__ void computeHessianKernel(
                                 J[4] = v_live.z * n_model_live.x - v_live.x * n_model_live.z;
                                 J[5] = v_live.x * n_model_live.y - v_live.y * n_model_live.x;
 
-                                // Huber weight for robustness (matches CPU reference)
                                 float abs_err = fabsf(err);
                                 float huber_k = 0.02f; 
                                 float w = (abs_err <= huber_k) ? 1.0f : huber_k / abs_err;
                                 float weighted_err = err * w;
 
-                                // Accumulate A = J*J^T (upper triangle)
                                 int count = 0;
                                 for (int i = 0; i < 6; ++i) {
                                     for (int j = i; j < 6; ++j) {
@@ -203,19 +226,15 @@ __global__ void computeHessianKernel(
                                 }
                                 local_res += weighted_err * weighted_err;
                                 local_inliers++;
-                            } else {
-                                local_angle_filtered++;
-                            }
-                        } else {
-                            local_dist_filtered++;
-                        }
+                            } else local_angle_filtered++;
+                        } else local_dist_filtered++;
                     }
                 }
             }
         }
     }
 
-    // Pack into array for warp reduction
+    // Pack for warp reduction
     float vals[34];
     for (int i = 0; i < 21; ++i) vals[i] = local_A[i];
     for (int i = 0; i < 6; ++i)  vals[21 + i] = local_b[i];
@@ -231,24 +250,17 @@ __global__ void computeHessianKernel(
     int lane = tid % 32;
     int wid = tid / 32;
     int num_warps = (blockDim.x * blockDim.y) / 32;
-
-    __shared__ float s_reduce[8][34]; // Up to 8 warps per block (256 threads)
+    __shared__ float s_reduce[8][34];
 
     for (int i = 0; i < 34; ++i) {
         float val = vals[i];
-        for (int offset = 16; offset > 0; offset /= 2) {
-            val += __shfl_down_sync(0xffffffff, val, offset);
-        }
+        for (int offset = 16; offset > 0; offset /= 2) val += __shfl_down_sync(0xffffffff, val, offset);
         if (lane == 0) s_reduce[wid][i] = val;
     }
     __syncthreads();
-
-    // The first 34 threads sum the partial warp results and do a single atomicAdd to global memory
     if (tid < 34) {
         float sum = 0.0f;
-        for (int w = 0; w < num_warps; ++w) {
-            sum += s_reduce[w][tid];
-        }
+        for (int w = 0; w < num_warps; ++w) sum += s_reduce[w][tid];
         atomicAdd(&global_stats[tid], sum);
     }
 }
@@ -258,11 +270,63 @@ __global__ void computeHessianKernel(
 // ---------------------------------------------------------------------------
 
 void ICPTracker::initGPU() {
-    d_hessian_ = utils::make_cuda_unique<float>(34); // 34 floats used
+    d_hessian_ = utils::make_cuda_unique<float>(34);
+    for (int l = 0; l < sensor::FramePyramid::LEVELS; ++l) {
+        int n = (sensor::FRAME_W >> l) * (sensor::FRAME_H >> l);
+        d_pyramid_v[l] = utils::make_cuda_unique<float3>(n);
+        d_pyramid_n[l] = utils::make_cuda_unique<float3>(n);
+    }
 }
 
 void ICPTracker::freeGPU() {
     d_hessian_.reset();
+    for (int l = 0; l < sensor::FramePyramid::LEVELS; ++l) {
+        d_pyramid_v[l].reset();
+        d_pyramid_n[l].reset();
+    }
+}
+
+ICPResult ICPTracker::trackGPU(const float*                d_depth,
+                               const uint8_t*              d_rgb,
+                               int                         width,
+                               int                         height,
+                               const ModelFrame&           model,
+                               const Eigen::Matrix4f&      pose_estimate,
+                               const Eigen::Matrix4f&      ref_pose)
+{
+    ICPResult result;
+    result.pose = pose_estimate;
+    result.tracking_ok = true;
+
+    // 1. Build Level 0 on GPU
+    dim3 block(16, 16);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    computeVerticesKernel<<<grid, block>>>(d_depth, d_pyramid_v[0].get(), width, height, sensor::FX, sensor::FY, sensor::CX, sensor::CY);
+    computeNormalsKernel<<<grid, block>>>(d_depth, d_pyramid_v[0].get(), d_pyramid_n[0].get(), width, height);
+
+    // 2. Build Pyramid on GPU
+    for (int l = 1; l < sensor::FramePyramid::LEVELS; ++l) {
+        int sw = width >> (l - 1);
+        int sh = height >> (l - 1);
+        int dw = width >> l;
+        int dh = height >> l;
+        dim3 g((dw + block.x - 1) / block.x, (dh + block.y - 1) / block.y);
+        downsampleKernel<<<g, block>>>(d_pyramid_v[l-1].get(), d_pyramid_n[l-1].get(), sw, sh, d_pyramid_v[l].get(), d_pyramid_n[l].get(), dw, dh);
+    }
+    cudaDeviceSynchronize();
+
+    // 3. Track levels
+    bool converged = false;
+    for (int level = sensor::FramePyramid::LEVELS - 1; level >= 0; --level) {
+        result = trackLevelGPU(
+            d_pyramid_v[level].get(), d_pyramid_n[level].get(),
+            width >> level, height >> level,
+            model, result.pose, ref_pose, level, params_.max_iterations[level]
+        );
+        converged = result.converged;
+    }
+    result.tracking_ok = converged && result.inliers > 100;
+    return result;
 }
 
 ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
@@ -305,7 +369,7 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
             model.d_vertices.get(), model.d_normals.get(),
             width, height,
             model.width, model.height,
-            kfusion::sensor::FX, kfusion::sensor::FY, kfusion::sensor::CX, kfusion::sensor::CY,
+            fx, fy, cx, cy,
             params_.dist_threshold, angle_thresh_cos,
             R(0,0), R(0,1), R(0,2),
             R(1,0), R(1,1), R(1,2),

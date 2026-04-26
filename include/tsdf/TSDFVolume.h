@@ -89,8 +89,8 @@ public:
     void freeGPU();
     void syncToGPU();
     void syncFromGPU();
-    void integrateGPU(const float* depth_meters,
-                      const uint8_t* rgb,
+    void integrateGPU(const float*           d_depth,
+                      const uint8_t*         d_rgb,
                       const Eigen::Matrix4f& pose,
                       float fx, float fy, 
                       float cx, float cy,
@@ -138,8 +138,6 @@ private:
 #ifdef CUDA_ENABLED
     // GPU state
     utils::CudaUniquePtr<VoxelGPU> d_voxels_; 
-    utils::CudaUniquePtr<float> d_depth_;
-    utils::CudaUniquePtr<uint8_t> d_rgb_;
     
     // Cached buffers for point cloud extraction
     mutable utils::CudaUniquePtr<uint32_t> d_pc_is_valid_;

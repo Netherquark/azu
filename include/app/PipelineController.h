@@ -153,18 +153,26 @@ private:
         std::mutex           mtx;
 
         void swap() {
-            // Integration finished writing to back_idx.
-            // It becomes the new ready_idx. The old ready_idx becomes the new back_idx.
-            int r = ready_idx.load();
-            ready_idx.store(back_idx.load());
-            back_idx.store(r);
+            std::lock_guard<std::mutex> lk(mtx);
+            // The buffer we just finished writing (back_idx) becomes the new ready_idx.
+            // The old ready_idx becomes the new back_idx, provided it's not being read.
+            // If it IS being read, we must use the third buffer.
+            int old_ready = ready_idx;
+            ready_idx = back_idx;
+            
+            // Find a buffer that is neither the new ready nor the current front
+            for (int i = 0; i < 3; ++i) {
+                if (i != ready_idx && i != front_idx) {
+                    back_idx = i;
+                    break;
+                }
+            }
         }
 
         int acquireFront() {
-            // Tracking acquires the most recent ready buffer.
-            int r = ready_idx.load();
-            front_idx.store(r);
-            return r;
+            std::lock_guard<std::mutex> lk(mtx);
+            front_idx = ready_idx;
+            return front_idx;
         }
     } model_buffers_;
 

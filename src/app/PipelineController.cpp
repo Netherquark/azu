@@ -386,16 +386,9 @@ void PipelineController::trackingLoop() {
         continue;
     }
 
-    // Build pyramid for ICP
-    sensor::FramePyramid pyramid;
-    sensor::buildFramePyramid(*frame, pyramid);
-
     // Get model frame safely from TripleBuffer storage (ZERO-COPY)
     std::shared_ptr<tracking::ModelFrame> model_ref;
-    {
-      std::lock_guard<std::mutex> lk(model_buffers_.mtx);
-      model_ref = model_buffers_.buffers[model_buffers_.acquireFront()];
-    }
+    model_ref = model_buffers_.buffers[model_buffers_.acquireFront()];
 
     // Run ICP
     Eigen::Matrix4f prev_pose;
@@ -427,9 +420,16 @@ void PipelineController::trackingLoop() {
       // Try relocalizing at the coarsest level first with more iterations
       if (use_gpu_.load()) {
 #ifdef CUDA_ENABLED
-        icp_result = tracker_->trackGPU(pyramid, *model_ref, prev_pose, prev_pose);
+        icp_result = tracker_->trackGPU(
+            preprocessor_->getGPUDepthMeters(),
+            preprocessor_->getGPURgb(),
+            frame->width, frame->height,
+            *model_ref, prev_pose, prev_pose
+        );
 #endif
       } else {
+        sensor::FramePyramid pyramid;
+        sensor::buildFramePyramid(*frame, pyramid);
         icp_result = tracker_->track(pyramid, *model_ref, prev_pose, prev_pose);
       }
 
@@ -438,12 +438,24 @@ void PipelineController::trackingLoop() {
     } else {
       if (use_gpu_.load()) {
 #ifdef CUDA_ENABLED
-        icp_result = tracker_->trackGPU(pyramid, *model_ref, predicted_pose, prev_pose);
+        icp_result = tracker_->trackGPU(
+            preprocessor_->getGPUDepthMeters(),
+            preprocessor_->getGPURgb(),
+            frame->width, frame->height,
+            *model_ref, predicted_pose, prev_pose
+        );
         if (!icp_result.tracking_ok) {
-          icp_result = tracker_->trackGPU(pyramid, *model_ref, prev_pose, prev_pose);
+          icp_result = tracker_->trackGPU(
+              preprocessor_->getGPUDepthMeters(),
+              preprocessor_->getGPURgb(),
+              frame->width, frame->height,
+              *model_ref, prev_pose, prev_pose
+          );
         }
 #endif
       } else {
+        sensor::FramePyramid pyramid;
+        sensor::buildFramePyramid(*frame, pyramid);
         icp_result = tracker_->track(pyramid, *model_ref, predicted_pose, prev_pose);
         if (!icp_result.tracking_ok) {
           icp_result = tracker_->track(pyramid, *model_ref, prev_pose, prev_pose);
@@ -541,11 +553,29 @@ void PipelineController::integrationLoop() {
     {
       utils::ScopedTimer t("TSDF Integration");
       std::unique_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
+#ifdef CUDA_ENABLED
+      if (use_gpu_.load()) {
+          tsdf_->integrateGPU(
+              preprocessor_->getGPUDepthMeters(),
+              preprocessor_->getGPURgb(),
+              frame->pose,
+              static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
+              static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
+              frame->width, frame->height);
+      } else {
+          tsdf_->integrate(
+              frame->depth_meters.data(), frame->rgb.data(), frame->pose,
+              static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
+              static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
+              frame->width, frame->height);
+      }
+#else
       tsdf_->integrate(
           frame->depth_meters.data(), frame->rgb.data(), frame->pose,
           static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
           static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
           frame->width, frame->height);
+#endif
     }
 
     // 2. Generate model frame for tracking (Ping-Pong back buffer)
@@ -636,10 +666,7 @@ void PipelineController::integrationLoop() {
             Qt::QueuedConnection);
       }
 #endif
-      {
-        std::lock_guard<std::mutex> lk(model_buffers_.mtx);
-        model_buffers_.swap();
-      }
+      model_buffers_.swap();
     }
 
     {

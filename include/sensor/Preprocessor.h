@@ -25,6 +25,11 @@ public:
     virtual void reset() = 0;
     virtual void resetTemporalState() = 0;
     virtual void process(RawFrame& frame, float min_depth_m, float max_depth_m) = 0;
+
+    // GPU-native access (returns nullptr if CPU backend is used)
+    virtual float*    getGPUDepthMeters() const { return nullptr; }
+    virtual uint8_t*  getGPURgb()         const { return nullptr; }
+
     virtual PreprocessBackend backend() const = 0;
 };
 
@@ -49,6 +54,9 @@ public:
     void resetTemporalState() override;
     void process(RawFrame& frame, float min_depth_m, float max_depth_m) override;
     PreprocessBackend backend() const override { return PreprocessBackend::CUDA; }
+
+    float*   getGPUDepthMeters() const override { return conditioner_.getGPUDepthMeters(); }
+    uint8_t* getGPURgb()         const override { return conditioner_.getGPURgb(); }
 
 private:
     cudaStream_t stream_ = nullptr;

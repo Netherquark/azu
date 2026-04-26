@@ -66,7 +66,10 @@ public:
                     const Eigen::Matrix4f&      ref_pose);
 
 #ifdef CUDA_ENABLED
-    ICPResult trackGPU(const sensor::FramePyramid& live,
+    ICPResult trackGPU(const float*                d_depth,
+                       const uint8_t*              d_rgb,
+                       int                         width,
+                       int                         height,
                        const ModelFrame&           model,
                        const Eigen::Matrix4f&      pose_estimate,
                        const Eigen::Matrix4f&      ref_pose);

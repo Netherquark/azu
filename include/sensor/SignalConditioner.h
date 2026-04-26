@@ -53,8 +53,14 @@ private:
     utils::CudaUniquePtr<uint8_t>  d_rgb_out_;
     utils::CudaUniquePtr<uint16_t> d_depth_in_;
     utils::CudaUniquePtr<uint16_t> d_depth_out_;
+    utils::CudaUniquePtr<float>    d_depth_meters_;
     utils::CudaUniquePtr<float>    d_ema_buf_m_;
     utils::CudaUniquePtr<float>    d_guidance_luma_;
+
+public:
+    uint16_t* getGPUDepthRaw() const { return d_depth_out_.get(); }
+    float*    getGPUDepthMeters() const { return d_depth_meters_.get(); }
+    uint8_t*  getGPURgb() const { return d_rgb_out_.get(); }
 #endif
 };
 

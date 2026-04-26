@@ -326,6 +326,12 @@ __global__ void guidedDepthFilterKernel(const uint16_t* depth, uint16_t* dst, co
     }
 }
 
+__global__ void rawToMetersKernel(const uint16_t* src, float* dst, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    dst[idx] = rawDepthToMetersGPU(src[idx]);
+}
+
 // ---------------------------------------------------------------------------
 // SignalConditioner::processCuda
 // ---------------------------------------------------------------------------
@@ -344,6 +350,7 @@ bool SignalConditioner::processCuda(RawFrame& raw,
         d_rgb_out_ = utils::make_cuda_unique<uint8_t>(n * 3);
         d_depth_in_ = utils::make_cuda_unique<uint16_t>(n);
         d_depth_out_ = utils::make_cuda_unique<uint16_t>(n);
+        d_depth_meters_ = utils::make_cuda_unique<float>(n);
         d_ema_buf_m_ = utils::make_cuda_unique<float>(n);
         d_guidance_luma_ = utils::make_cuda_unique<float>(n);
         cudaMemsetAsync(d_ema_buf_m_.get(), 0, n * sizeof(float), stream);
@@ -390,7 +397,14 @@ bool SignalConditioner::processCuda(RawFrame& raw,
     guidedDepthFilterKernel<<<grid, block, 0, stream>>>(d_depth_in_.get(), d_depth_out_.get(), d_guidance_luma_.get(), w, h, min_depth_m, max_depth_m);
     CUDA_CHECK_LAST();
 
-    // Download
+    // 5. Final meters conversion for TSDF integration (Zero-copy GPU path)
+    int total_threads = n;
+    int block_size = 256;
+    int grid_size = (total_threads + block_size - 1) / block_size;
+    rawToMetersKernel<<<grid_size, block_size, 0, stream>>>(d_depth_out_.get(), d_depth_meters_.get(), n);
+    CUDA_CHECK_LAST();
+
+    // Download (Only for UI preview or CPU-mode compatibility)
     cudaMemcpyAsync(raw.rgb.data(), d_rgb_out_.get(), n * 3, cudaMemcpyDeviceToHost, stream);
     cudaMemcpyAsync(raw.depth.data(), d_depth_out_.get(), n * sizeof(uint16_t), cudaMemcpyDeviceToHost, stream);
 
