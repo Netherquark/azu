@@ -47,12 +47,25 @@ PipelineController::~PipelineController() {
 }
 
 bool PipelineController::start() {
+    std::lock_guard<std::mutex> ctrl_lk(control_mutex_);
     if (running_.load()) return true;
 
+    KFLOG_INFO("Pipeline", "Pipeline starting...");
+    
     if (!sensor_->init()) {
         KFLOG_ERROR("Pipeline", "Sensor init failed");
         state_.store(PipelineState::Error);
         return false;
+    }
+
+    // Clear queues
+    {
+        std::lock_guard<std::mutex> lk(tracking_queue_mutex_);
+        while (!raw_queue_.empty()) raw_queue_.pop();
+    }
+    {
+        std::lock_guard<std::mutex> lk(integration_queue_mutex_);
+        while (!integration_queue_.empty()) integration_queue_.pop();
     }
 
     running_.store(true);
@@ -133,12 +146,14 @@ void PipelineController::setHyperparams(const FusionHyperparams& h) {
 }
 
 void PipelineController::stop() {
+    std::lock_guard<std::mutex> ctrl_lk(control_mutex_);
     if (!running_.load()) return;
     running_.store(false);
     state_.store(PipelineState::Stopped);
 
     KFLOG_INFO("Pipeline", "Pipeline stopping (joining worker threads)...");
     sensor_->stop();
+    sensor_->setFrameCallback(nullptr); // Unset to avoid late callbacks
 
     // Wake up threads blocked on condition variables
     tracking_queue_cv_.notify_all();
@@ -160,28 +175,34 @@ void PipelineController::stop() {
 }
 
 void PipelineController::reset() {
+    // Note: stop() already has control_mutex_, so we don't lock here yet
+    // to avoid deadlock, but we ensure reset is sequential.
     stop();
+    std::lock_guard<std::mutex> ctrl_lk(control_mutex_);
 
+    // Clear queues
     {
         std::lock_guard<std::mutex> lk(tracking_queue_mutex_);
-        while (!raw_queue_.empty()) {
-            raw_queue_.pop(); // shared_ptr release returns RawFrame to sensor pool
-        }
+        while (!raw_queue_.empty()) raw_queue_.pop();
     }
     {
         std::lock_guard<std::mutex> lk(integration_queue_mutex_);
-        while (!integration_queue_.empty()) {
-            integration_queue_.pop(); // returns FrameData to data pool
-        }
+        while (!integration_queue_.empty()) integration_queue_.pop();
     }
 
     mesh_extraction_requested_.store(false);
 
-    for (int i = 0; i < 2; ++i) {
-        if (!model_pingpong_.buffers[i]) continue;
-        auto& mf = *model_pingpong_.buffers[i];
-        std::fill(mf.vertices.begin(), mf.vertices.end(), Eigen::Vector3f::Zero());
-        std::fill(mf.normals.begin(), mf.normals.end(), Eigen::Vector3f::Zero());
+    // Clear Ping-Pong buffers under lock
+    {
+        std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
+        for (int i = 0; i < 2; ++i) {
+            if (!model_pingpong_.buffers[i]) continue;
+            auto& mf = *model_pingpong_.buffers[i];
+            std::fill(mf.vertices.begin(), mf.vertices.end(), Eigen::Vector3f::Zero());
+            std::fill(mf.normals.begin(), mf.normals.end(), Eigen::Vector3f::Zero());
+        }
+        model_pingpong_.front_idx.store(0);
+        model_pingpong_.back_idx.store(1);
     }
 
     tsdf_->reset();
@@ -365,7 +386,7 @@ void PipelineController::trackingLoop() {
                 std::lock_guard<std::mutex> lk(pose_mutex_);
                 current_pose_ = icp_result.pose;
             }
-            frame->pose = icp_result.pose; // Couple pose with frame!
+            frame->pose = icp_result.pose; 
             state_.store(PipelineState::Running);
 
             // Enqueue for integration
@@ -374,23 +395,19 @@ void PipelineController::trackingLoop() {
                 if (integration_queue_.size() < 3)
                     integration_queue_.push(frame);
                 else
-                    releaseData(std::move(frame)); // Drop if queue full
+                    releaseData(std::move(frame)); 
             }
             integration_queue_cv_.notify_one();
-
-            // Periodic Health Log (Debug)
-            static int health_log = 0;
-            if (++health_log % 60 == 0) {
-                std::ostringstream oss;
-                oss << "Tracking Healthy: inliers=" << icp_result.inliers
-                    << " err=" << icp_result.error
-                    << " (live_pts=" << icp_result.valid_live_points
-                    << " model_pts=" << icp_result.valid_model_points << ")";
-                KFLOG_DEBUG("Pipeline", oss.str());
-            }
         } else {
+            // RELOCALIZATION: If tracking lost, don't update state or pose, but don't stop.
+            // We just don't integrate the frame. This keeps the model "clean".
             state_.store(PipelineState::TrackingLost);
             releaseData(std::move(frame));
+            
+            static int recover_log = 0;
+            if (++recover_log % 30 == 0) {
+                KFLOG_WARN("Pipeline", "Tracking Lost — Integration suspended. Attempting relocalization...");
+            }
         }
     }
 }

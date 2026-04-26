@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <atomic>
 #include <shared_mutex>
+#include <mutex>
 #include "utils/CudaUniquePtr.h"
 #include "tsdf/VoxelGPU.h"
 
@@ -139,6 +140,10 @@ private:
     bool    gpu_valid_ = false;
 #endif
     bool    gpu_enabled_ = false;
+
+    // Internal helpers
+    float getTSDF(const Eigen::Vector3f& world_pos) const;
+    Eigen::Vector3f computeNormal(const Eigen::Vector3f& world_pos) const;
 };
 
 } // namespace tsdf

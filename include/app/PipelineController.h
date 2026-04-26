@@ -145,6 +145,7 @@ private:
     std::atomic<float>                    mesh_extract_progress_{0.0f};
     std::atomic<float>                    export_progress_{0.0f};
     std::atomic<bool>                     use_gpu_{false};
+    mutable std::mutex                    control_mutex_;
 
     void onRawFrame(std::shared_ptr<sensor::RawFrame> raw);
     void trackingLoop();
