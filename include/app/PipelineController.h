@@ -142,19 +142,29 @@ private:
     int                                   lost_log_counter_     = 0;
     int                                   success_log_counter_  = 0;
 
-    // Tracking model frame (double-buffered PingPong)
-    struct PingPongModel {
-        std::shared_ptr<tracking::ModelFrame> buffers[2];
+    // Tracking model frame (Triple-buffered to prevent data race)
+    struct TripleBufferModel {
+        std::shared_ptr<tracking::ModelFrame> buffers[3];
         std::atomic<int>     front_idx{0}; // Read by tracking
         std::atomic<int>     back_idx{1};  // Written by integration
+        std::atomic<int>     ready_idx{2}; // Most recently completed raycast
         std::mutex           mtx;
 
         void swap() {
-            int f = front_idx.load();
-            front_idx.store(back_idx.load());
-            back_idx.store(f);
+            // Integration finished writing to back_idx.
+            // It becomes the new ready_idx. The old ready_idx becomes the new back_idx.
+            int r = ready_idx.load();
+            ready_idx.store(back_idx.load());
+            back_idx.store(r);
         }
-    } model_pingpong_;
+
+        int acquireFront() {
+            // Tracking acquires the most recent ready buffer.
+            int r = ready_idx.load();
+            front_idx.store(r);
+            return r;
+        }
+    } model_buffers_;
 
     // Mesh extraction trigger
     std::atomic<bool>                     mesh_extraction_requested_{false};

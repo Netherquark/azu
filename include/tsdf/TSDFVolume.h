@@ -144,6 +144,8 @@ private:
     // Cached buffers for point cloud extraction
     mutable utils::CudaUniquePtr<uint32_t> d_pc_is_valid_;
     mutable utils::CudaUniquePtr<uint32_t> d_pc_offsets_;
+    mutable utils::CudaUniquePtr<float3> d_pc_out_points_;
+    mutable utils::CudaUniquePtr<uchar3> d_pc_out_colors_;
     
     bool    gpu_valid_ = false;
 #endif

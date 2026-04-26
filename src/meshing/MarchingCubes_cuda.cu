@@ -377,16 +377,19 @@ __global__ void classifyVoxelKernel(
 
     tsdf::VoxelGPU* voxels = (tsdf::VoxelGPU*)voxels_void;
 
-    auto get_tsdf = [&](int xi, int yi, int zi) {
-        tsdf::VoxelGPU& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        return (v.weight <= 0.001f) ? 1.0f : v.tsdf;
-    };
-
+    bool valid_cube = true;
     int cube_idx = 0;
     for (int i = 0; i < 8; ++i) {
-        if (get_tsdf(x + c_corner_offsets[i][0], y + c_corner_offsets[i][1], z + c_corner_offsets[i][2]) < 0)
-            cube_idx |= (1 << i);
+        tsdf::VoxelGPU& v = voxels[(z + c_corner_offsets[i][2]) * resolution * resolution + 
+                                   (y + c_corner_offsets[i][1]) * resolution + 
+                                   (x + c_corner_offsets[i][0])];
+        if (v.weight <= 0.001f) {
+            valid_cube = false;
+            break;
+        }
+        if (v.tsdf < 0) cube_idx |= (1 << i);
     }
+    if (!valid_cube) cube_idx = 0;
 
     int tri_count = 0;
     if (c_edge_table[cube_idx] != 0) {
@@ -422,13 +425,16 @@ __global__ void generateMeshKernel(
         return voxels[zi * resolution * resolution + yi * resolution + xi];
     };
 
+    bool valid_cube = true;
     int cube_idx = 0;
     float corner_vals[8];
     for (int i = 0; i < 8; ++i) {
         tsdf::VoxelGPU& v = get_voxel(x + c_corner_offsets[i][0], y + c_corner_offsets[i][1], z + c_corner_offsets[i][2]);
-        corner_vals[i] = (v.weight <= 0.001f) ? 1.0f : v.tsdf;
+        if (v.weight <= 0.001f) valid_cube = false;
+        corner_vals[i] = v.tsdf;
         if (corner_vals[i] < 0) cube_idx |= (1 << i);
     }
+    if (!valid_cube) return;
 
     float3 edge_v[12];
     float3 edge_n[12];
@@ -555,15 +561,46 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
         CUDA_CHECK_LAST();
         CUDA_CHECK(cudaDeviceSynchronize());
 
-        mesh->positions.resize(capped_tris * 3);
-        mesh->normals.resize(capped_tris * 3);
-        mesh->colors.resize(capped_tris * 3 * 3);
-        mesh->indices.resize(capped_tris * 3);
+        std::vector<float3> raw_pos(capped_tris * 3);
+        std::vector<float3> raw_norm(capped_tris * 3);
+        std::vector<uint8_t> raw_col(capped_tris * 3 * 3);
         
-        CUDA_CHECK(cudaMemcpy(mesh->positions.data(), d_mesh_vertices_.get(), capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(mesh->normals.data(), d_mesh_normals_.get(), capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(mesh->colors.data(), d_mesh_colors_.get(), capped_tris * 9, cudaMemcpyDeviceToHost));
-        for (uint32_t i = 0; i < capped_tris * 3; ++i) mesh->indices[i] = i;
+        CUDA_CHECK(cudaMemcpy(raw_pos.data(), d_mesh_vertices_.get(), capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(raw_norm.data(), d_mesh_normals_.get(), capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(raw_col.data(), d_mesh_colors_.get(), capped_tris * 9, cudaMemcpyDeviceToHost));
+        
+        // Unify vertices on CPU to save memory (reduces size by ~6x)
+        struct VectorHash {
+            size_t operator()(const Eigen::Vector3f& v) const {
+                size_t h1 = std::hash<float>{}(v.x());
+                size_t h2 = std::hash<float>{}(v.y());
+                size_t h3 = std::hash<float>{}(v.z());
+                return h1 ^ (h2 << 1) ^ (h3 << 2);
+            }
+        };
+        std::unordered_map<Eigen::Vector3f, uint32_t, VectorHash> global_map;
+        
+        mesh->positions.reserve(capped_tris);
+        mesh->normals.reserve(capped_tris);
+        mesh->colors.reserve(capped_tris * 3);
+        mesh->indices.reserve(capped_tris * 3);
+
+        for (uint32_t i = 0; i < capped_tris * 3; ++i) {
+            Eigen::Vector3f pos(raw_pos[i].x, raw_pos[i].y, raw_pos[i].z);
+            auto it = global_map.find(pos);
+            if (it != global_map.end()) {
+                mesh->indices.push_back(it->second);
+            } else {
+                uint32_t new_idx = static_cast<uint32_t>(mesh->positions.size());
+                global_map[pos] = new_idx;
+                mesh->positions.push_back(pos);
+                mesh->normals.push_back(Eigen::Vector3f(raw_norm[i].x, raw_norm[i].y, raw_norm[i].z));
+                mesh->colors.push_back(raw_col[i*3+0]);
+                mesh->colors.push_back(raw_col[i*3+1]);
+                mesh->colors.push_back(raw_col[i*3+2]);
+                mesh->indices.push_back(new_idx);
+            }
+        }
         
         if (total_tris > max_triangles_) {
             std::cerr << "[MC] Reached max_triangles limit (" << max_triangles_ << "). Mesh is truncated.\n";

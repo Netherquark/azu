@@ -38,8 +38,8 @@ PipelineController::PipelineController(sensor::PreprocessBackend preferred_backe
     }
 
     // Initialize ping-pong buffers
-    for (int i = 0; i < 2; ++i) {
-        model_pingpong_.buffers[i] = std::make_shared<tracking::ModelFrame>();
+    for (int i = 0; i < 3; ++i) {
+        model_buffers_.buffers[i] = std::make_shared<tracking::ModelFrame>();
     }
 }
 
@@ -79,10 +79,10 @@ bool PipelineController::start() {
             throw std::runtime_error(cudaGetErrorString(stream_err));
         }
         // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
-        for (int i = 0; i < 2; ++i) {
-            model_pingpong_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-            model_pingpong_.buffers[i]->d_normals = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-            model_pingpong_.buffers[i]->d_colors = utils::make_cuda_unique<uchar3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+        for (int i = 0; i < 3; ++i) {
+            model_buffers_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            model_buffers_.buffers[i]->d_normals = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            model_buffers_.buffers[i]->d_colors = utils::make_cuda_unique<uchar3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
         }
         use_gpu_ = true;
         tsdf_->setGPUEnabled(true);
@@ -196,10 +196,10 @@ void PipelineController::stop() {
     }
     tsdf_->freeGPU();
     tracker_->freeGPU();
-    for (int i = 0; i < 2; ++i) {
-        model_pingpong_.buffers[i]->d_vertices.reset();
-        model_pingpong_.buffers[i]->d_normals.reset();
-        model_pingpong_.buffers[i]->d_colors.reset();
+    for (int i = 0; i < 3; ++i) {
+        model_buffers_.buffers[i]->d_vertices.reset();
+        model_buffers_.buffers[i]->d_normals.reset();
+        model_buffers_.buffers[i]->d_colors.reset();
     }
 #endif
   KFLOG_INFO("Pipeline", "Pipeline shutdown complete.");
@@ -226,17 +226,17 @@ void PipelineController::reset() {
 
     mesh_extraction_requested_.store(false);
 
-    // Clear Ping-Pong buffers under lock
     {
-        std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
-        for (int i = 0; i < 2; ++i) {
-            if (!model_pingpong_.buffers[i]) continue;
-            auto& mf = *model_pingpong_.buffers[i];
+        std::lock_guard<std::mutex> lk(model_buffers_.mtx);
+        for (int i = 0; i < 3; ++i) {
+            if (!model_buffers_.buffers[i]) continue;
+            auto& mf = *model_buffers_.buffers[i];
             std::fill(mf.vertices.begin(), mf.vertices.end(), Eigen::Vector3f::Zero());
             std::fill(mf.normals.begin(), mf.normals.end(), Eigen::Vector3f::Zero());
         }
-        model_pingpong_.front_idx.store(0);
-        model_pingpong_.back_idx.store(1);
+        model_buffers_.front_idx.store(0);
+        model_buffers_.back_idx.store(1);
+        model_buffers_.ready_idx.store(2);
     }
 
     tsdf_->reset();
@@ -320,10 +320,6 @@ void PipelineController::trackingLoop() {
       raw_queue_.pop();
     }
 
-    // Apply Zero-Latency CPU Super-Resolution (CAS)
-    // Enhance the raw RGB buffer *before* it's paired with 3D depth meshes
-    sensor::sr::applyCAS(raw->rgb, sensor::RGB_WIDTH, sensor::RGB_HEIGHT, 0.85f);
-
     // Build processed frame here (using pool)
     auto frame = acquireFreeData();
     if (!frame) {
@@ -387,11 +383,11 @@ void PipelineController::trackingLoop() {
     sensor::FramePyramid pyramid;
     sensor::buildFramePyramid(*frame, pyramid);
 
-    // Get model frame safely from PingPong storage (ZERO-COPY)
+    // Get model frame safely from TripleBuffer storage (ZERO-COPY)
     std::shared_ptr<tracking::ModelFrame> model_ref;
     {
-      std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
-      model_ref = model_pingpong_.buffers[model_pingpong_.front_idx.load()];
+      std::lock_guard<std::mutex> lk(model_buffers_.mtx);
+      model_ref = model_buffers_.buffers[model_buffers_.acquireFront()];
     }
 
     // Run ICP
@@ -543,8 +539,8 @@ void PipelineController::integrationLoop() {
     // 2. Generate model frame for tracking (Ping-Pong back buffer)
     int integrated_count = tsdf_->integratedFrames();
     if (integrated_count % 1 == 0) { // Raycast every frame for better tracking
-      int back = model_pingpong_.back_idx.load();
-      auto &model_back = *(model_pingpong_.buffers[back]);
+      int back = model_buffers_.back_idx.load();
+      auto &model_back = *(model_buffers_.buffers[back]);
 
 #ifdef CUDA_ENABLED
       tsdf_->raycastGPU(frame->pose, static_cast<float>(sensor::FX),
@@ -626,8 +622,8 @@ void PipelineController::integrationLoop() {
       }
 #endif
       {
-        std::lock_guard<std::mutex> lk(model_pingpong_.mtx);
-        model_pingpong_.swap();
+        std::lock_guard<std::mutex> lk(model_buffers_.mtx);
+        model_buffers_.swap();
       }
     }
 

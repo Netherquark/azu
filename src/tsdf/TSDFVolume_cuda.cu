@@ -120,7 +120,7 @@ __global__ void integrationKernel_PixelParallel(
             float w_old = __int_as_float(w_old_int);
             
             w_new = fminf(w_old + 1.0f, max_weight);
-            float t_new = (t_old * w_old + tsdf_new) / (w_new + 1e-6f);
+            float t_new = (t_old * w_old + tsdf_new) / (w_old + 1.0f);
             
             unsigned int t_new_int = __float_as_int(t_new);
             unsigned int w_new_int = __float_as_int(w_new);
@@ -142,9 +142,7 @@ __global__ void integrationKernel_PixelParallel(
                 do {
                     c_assumed = c_old_val;
                     float c_old = __int_as_float(c_assumed);
-                    float current_w = w_new; // Safe non-torn read using locally computed deterministic weight
-                    float prev_w = fmaxf(0.0f, current_w - 1.0f);
-                    float c_new = (c_old * prev_w + m) / (current_w + 1e-6f);
+                    float c_new = (c_old * w_old + m) / (w_old + 1.0f);
                     c_new_val = __float_as_int(c_new);
                     c_old_val = atomicCAS(c_addr_i, c_assumed, c_new_val);
                 } while (c_assumed != c_old_val);
@@ -478,6 +476,8 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
 
     if (!d_pc_is_valid_) d_pc_is_valid_ = utils::make_cuda_unique<uint32_t>(total_voxels);
     if (!d_pc_offsets_) d_pc_offsets_ = utils::make_cuda_unique<uint32_t>(total_voxels);
+    if (!d_pc_out_points_) d_pc_out_points_ = utils::make_cuda_unique<float3>(total_voxels);
+    if (!d_pc_out_colors_) d_pc_out_colors_ = utils::make_cuda_unique<uchar3>(total_voxels);
 
     dim3 block(8, 8, 8);
     dim3 grid((res + block.x - 1) / block.x, (res + block.y - 1) / block.y, (res + block.z - 1) / block.z);
@@ -490,24 +490,16 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
     thrust::device_ptr<uint32_t> d_ptr_valid(d_pc_is_valid_.get());
     thrust::device_ptr<uint32_t> d_ptr_offsets(d_pc_offsets_.get());
     thrust::exclusive_scan(d_ptr_valid, d_ptr_valid + total_voxels, d_ptr_offsets);
-
-    uint32_t total_points = 0;
-    uint32_t last_valid, last_offset;
-    CUDA_CHECK(cudaMemcpyAsync(&last_valid, d_pc_is_valid_.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost, 0));
-    CUDA_CHECK(cudaMemcpyAsync(&last_offset, d_pc_offsets_.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost, 0));
-    CUDA_CHECK(cudaStreamSynchronize(0));
-    total_points = last_offset + last_valid;
+    
+    uint32_t total_points = thrust::reduce(d_ptr_valid, d_ptr_valid + total_voxels);
 
     if (total_points == 0) return;
-
-    utils::CudaUniquePtr<float3> d_out_points = utils::make_cuda_unique<float3>(total_points);
-    utils::CudaUniquePtr<uchar3> d_out_colors = utils::make_cuda_unique<uchar3>(total_points);
 
     compactPointsKernel<<<grid, block>>>(
         d_voxels_.get(), d_pc_is_valid_.get(), d_pc_offsets_.get(),
         res, params_.voxel_size, 
         make_float3(params_.origin.x(), params_.origin.y(), params_.origin.z()),
-        d_out_points.get(), d_out_colors.get()
+        d_pc_out_points_.get(), d_pc_out_colors_.get()
     );
     CUDA_CHECK_LAST();
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -516,8 +508,8 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
     colors_out.resize(total_points * 3);
     
     // Direct copy from device into the correctly sized Eigen/byte vectors
-    CUDA_CHECK(cudaMemcpy(points_out.data(), d_out_points.get(), total_points * sizeof(float3), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(colors_out.data(), d_out_colors.get(), total_points * sizeof(uchar3), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(points_out.data(), d_pc_out_points_.get(), total_points * sizeof(float3), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(colors_out.data(), d_pc_out_colors_.get(), total_points * sizeof(uchar3), cudaMemcpyDeviceToHost));
 }
 
 } // namespace tsdf

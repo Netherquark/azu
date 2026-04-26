@@ -437,14 +437,18 @@ std::shared_ptr<MeshData> MarchingCubes::extract(const tsdf::TSDFVolume& volume,
         
         for (int y = 0; y < RES_Y - 1; ++y) {
             for (int x = 0; x < RES_X - 1; ++x) {
+                bool valid_cube = true;
                 float corner_vals[8];
                 for (int c = 0; c < 8; ++c) {
                     int cx = x + CORNER_OFFSETS[c][0];
                     int cy = y + CORNER_OFFSETS[c][1];
                     int cz = z + CORNER_OFFSETS[c][2];
                     const tsdf::Voxel& vox = volume.voxelAt(cx, cy, cz);
-                    corner_vals[c] = (vox.weight <= 0.0f) ? 1.0f : vox.tsdf;
+                    if (vox.weight <= 0.001f) valid_cube = false;
+                    corner_vals[c] = vox.tsdf;
                 }
+
+                if (!valid_cube) continue;
 
                 int cube_idx = 0;
                 for (int c = 0; c < 8; ++c)
