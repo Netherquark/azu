@@ -11,6 +11,7 @@
 #include <QCloseEvent>
 #include <QStatusBar>
 #include <QLabel>
+#include <QApplication>
 
 namespace kfusion {
 namespace gui {
@@ -20,55 +21,7 @@ MainWindow::MainWindow(QWidget* parent)
 {
     setWindowTitle("KinectFusionQt");
     resize(1600, 900);
-
-    setStyleSheet(R"css(
-        QMainWindow, QWidget { background-color: #1e1f24; color: #ddd; font-size: 26px; }
-        QGroupBox {
-            border: 1px solid #444;
-            border-radius: 6px;
-            margin-top: 12px;
-            padding: 12px 8px 8px 8px;
-            font-size: 26px;
-            font-weight: bold;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            color: #bbb;
-            font-size: 26px;
-        }
-        QProgressBar { border: 1px solid #555; border-radius: 3px; background: #333; }
-        QProgressBar::chunk { background: #3a7fcf; border-radius: 2px; }
-        QComboBox {
-            background: #333;
-            border: 1px solid #555;
-            border-radius: 3px;
-            padding: 5px 8px;
-            font-size: 26px;
-            min-height: 22px;
-        }
-        QLabel { color: #ccc; font-size: 26px; }
-        QStatusBar { background: #16171c; color: #aaa; font-size: 22px; }
-        QSpinBox, QDoubleSpinBox {
-            background: #2a2b30;
-            border: 1px solid #555;
-            border-radius: 3px;
-            padding: 3px 6px;
-            font-size: 26px;
-            min-height: 22px;
-            color: #ddd;
-        }
-        QScrollBar:vertical {
-            background: #2a2b30;
-            width: 8px;
-            border-radius: 4px;
-        }
-        QScrollBar::handle:vertical {
-            background: #555;
-            border-radius: 4px;
-            min-height: 20px;
-        }
-    )css");
+    updateGlobalStyle();
 
     pipeline_ = std::make_unique<app::PipelineController>();
     setupUI();
@@ -263,6 +216,111 @@ void MainWindow::onMetricsTimer() {
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (pipeline_) pipeline_->stop();
     event->accept();
+}
+
+void MainWindow::updateGlobalStyle() {
+    int base_font     = 12;
+    int title_font    = 14;
+    int status_font   = 24;
+    int button_font   = 16;
+    
+    int scaled_base   = static_cast<int>(base_font   * ui_scale_);
+    int scaled_title  = static_cast<int>(title_font  * ui_scale_);
+    int scaled_status = static_cast<int>(status_font * ui_scale_);
+    int scaled_button = static_cast<int>(button_font * ui_scale_);
+
+    QString style = QString(R"css(
+        QMainWindow, QWidget { background-color: #1e1f24; color: #ddd; font-size: %1px; }
+        QGroupBox {
+            border: 2px solid #333;
+            border-radius: 8px;
+            margin-top: %2px;
+            padding: %3px;
+            font-weight: bold;
+            color: #5a9fff;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px;
+        }
+        QPushButton {
+            background: #3a3b42;
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: %4px %5px;
+            font-size: %6px;
+            font-weight: bold;
+            color: #eee;
+        }
+        QPushButton:hover { background: #4a4b52; border-color: #777; }
+        QPushButton:pressed { background: #2a2b30; }
+        QPushButton:disabled { color: #666; background: #2a2b30; }
+
+        .ActionBtn { background: #3a7fcf; border: none; }
+        .ActionBtn:hover { background: #4a8fdf; }
+        .StopBtn { background: #cf3a3a; }
+        .StopBtn:hover { background: #df4a4a; }
+
+        QProgressBar { border: 1px solid #555; border-radius: 4px; background: #222; text-align: center; }
+        QProgressBar::chunk { background: #3a7fcf; border-radius: 2px; }
+
+        QComboBox, QSpinBox, QDoubleSpinBox {
+            background: #2a2b30;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 4px 8px;
+            min-height: %7px;
+            color: #eee;
+        }
+        QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover { border-color: #3a7fcf; }
+
+        QLabel { color: #ccc; }
+        .StatusLabel { font-size: %8px; font-weight: bold; }
+        .PanelTitle { font-size: %9px; font-weight: bold; color: #eee; }
+
+        QLabel[status="ok"] { color: #4f4; }
+        QLabel[status="lost"] { color: #f44; }
+        QLabel[status="running"] { color: #4f4; }
+        QLabel[status="stopped"] { color: #fa4; }
+
+        QScrollBar:vertical { background: #1e1f24; width: 10px; }
+        QScrollBar::handle:vertical { background: #444; border-radius: 5px; min-height: 20px; }
+        QScrollBar::add-line, QScrollBar::sub-line { background: none; }
+    )css")
+    .arg(scaled_base)
+    .arg(static_cast<int>(15 * ui_scale_))
+    .arg(static_cast<int>(10 * ui_scale_))
+    .arg(static_cast<int>(10 * ui_scale_))
+    .arg(static_cast<int>(15 * ui_scale_))
+    .arg(scaled_button)
+    .arg(static_cast<int>(24 * ui_scale_))
+    .arg(scaled_status)
+    .arg(scaled_title);
+
+    qApp->setStyleSheet(style);
+}
+
+void MainWindow::keyPressEvent(QKeyEvent* event) {
+    if (event->modifiers() & Qt::ControlModifier) {
+        if (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal) {
+            ui_scale_ = std::min(3.0f, ui_scale_ + 0.1f);
+            updateGlobalStyle();
+            event->accept();
+            return;
+        } else if (event->key() == Qt::Key_Minus) {
+            ui_scale_ = std::max(0.5f, ui_scale_ - 0.1f);
+            updateGlobalStyle();
+            event->accept();
+            return;
+        } else if (event->key() == Qt::Key_0) {
+            ui_scale_ = 1.0f;
+            updateGlobalStyle();
+            event->accept();
+            return;
+        }
+    }
+    QMainWindow::keyPressEvent(event);
 }
 
 } // namespace gui

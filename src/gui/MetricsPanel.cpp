@@ -3,19 +3,20 @@
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QString>
+#include <QStyle>
+#include <QVariant>
 
 namespace kfusion {
 namespace gui {
 
 MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
     setupUI();
-    setMinimumWidth(380);
-    setMaximumWidth(500);
+    setMinimumWidth(240);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 }
 
 QLabel* MetricsPanel::makeLabel(const QString& text) {
     auto* lbl = new QLabel(text, this);
-    lbl->setStyleSheet("color: #ccc; font-family: monospace; font-size: 26px;");
     return lbl;
 }
 
@@ -25,7 +26,7 @@ void MetricsPanel::setupUI() {
     root->setContentsMargins(10, 10, 10, 10);
 
     auto* title = new QLabel("Pipeline Metrics", this);
-    title->setStyleSheet("color: #eee; font-weight: bold; font-size: 32px; padding: 8px 0;");
+    title->setProperty("class", "PanelTitle");
     root->addWidget(title);
 
     // Performance group
@@ -49,6 +50,7 @@ void MetricsPanel::setupUI() {
     auto* g_track = new QGridLayout(grp_track);
     g_track->addWidget(new QLabel("Status:", this), 0, 0);
     lbl_tracking_status_ = makeLabel("--");
+    lbl_tracking_status_->setProperty("class", "StatusLabel");
     g_track->addWidget(lbl_tracking_status_, 0, 1);
 
     g_track->addWidget(new QLabel("ICP Error:", this), 1, 0);
@@ -128,11 +130,13 @@ void MetricsPanel::update(const app::PipelineMetrics& m) {
 
     if (m.tracking_ok) {
         lbl_tracking_status_->setText("OK");
-        lbl_tracking_status_->setStyleSheet("color: #4f4; font-family: monospace; font-size: 26px; font-weight: bold;");
+        lbl_tracking_status_->setProperty("status", "ok");
     } else {
         lbl_tracking_status_->setText("LOST");
-        lbl_tracking_status_->setStyleSheet("color: #f44; font-family: monospace; font-size: 26px; font-weight: bold;");
+        lbl_tracking_status_->setProperty("status", "lost");
     }
+    lbl_tracking_status_->style()->unpolish(lbl_tracking_status_);
+    lbl_tracking_status_->style()->polish(lbl_tracking_status_);
 
     QString state_str;
     switch (m.state) {

@@ -19,6 +19,7 @@ int main(int argc, char* argv[]) {
     fmt.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
     QSurfaceFormat::setDefaultFormat(fmt);
 
+    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QApplication app(argc, argv);
     app.setApplicationName("KinectFusionQt");
     app.setApplicationVersion("1.0.0");

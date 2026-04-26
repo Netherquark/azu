@@ -52,6 +52,10 @@ private:
 
     void setupUI();
     void connectSignals();
+    void updateGlobalStyle();
+
+    float ui_scale_ = 1.0f;
+    void keyPressEvent(QKeyEvent* event) override;
 };
 
 } // namespace gui
