@@ -5,13 +5,13 @@
 #include "export/GLBExporter.h"
 #include "export/PLYExporter.h"
 #include "utils/Logger.h"
-#include "sensor/SuperResolution.h"
 #include <QCoreApplication>
 #include <iostream>
 #include <sstream>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <stdexcept>
 
 #ifdef CUDA_ENABLED
 #include <cuda_runtime.h>
@@ -75,6 +75,7 @@ bool PipelineController::start() {
     first_frame_   = true;
     frame_count_   = 0;
     current_pose_  = Eigen::Matrix4f::Identity();
+    signal_conditioner_.reset();
 
     // Set frame callback before starting capture
     sensor_->setFrameCallback([this](std::shared_ptr<sensor::RawFrame> raw) {
@@ -92,6 +93,10 @@ bool PipelineController::start() {
     try {
         tsdf_->initGPU();
         tracker_->initGPU();
+        cudaError_t stream_err = cudaStreamCreate(&cuda_stream_);
+        if (stream_err != cudaSuccess) {
+            throw std::runtime_error(cudaGetErrorString(stream_err));
+        }
         // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
         for (int i = 0; i < 2; ++i) {
             model_pingpong_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
@@ -101,12 +106,17 @@ bool PipelineController::start() {
         tsdf_->setGPUEnabled(true);
         KFLOG_INFO("Pipeline", "CUDA hardware acceleration ENABLED (NVIDIA GPU detected).");
     } catch (const std::exception& e) {
+        if (cuda_stream_) {
+            cudaStreamDestroy(cuda_stream_);
+            cuda_stream_ = nullptr;
+        }
         use_gpu_ = false;
         tsdf_->setGPUEnabled(false);
         KFLOGF_WARN("Pipeline", "CUDA initialization FAILED: %s. Falling back to CPU mode.", e.what());
     }
 #else
     use_gpu_ = false;
+    cuda_stream_ = nullptr;
     tsdf_->setGPUEnabled(false);
     KFLOG_INFO("Pipeline", "Using CPU-only path (CUDA not enabled in build).");
 #endif
@@ -167,6 +177,10 @@ void PipelineController::stop() {
     if (meshing_thread_.joinable())     meshing_thread_.join();
 
 #ifdef CUDA_ENABLED
+    if (cuda_stream_) {
+        cudaStreamDestroy(cuda_stream_);
+        cuda_stream_ = nullptr;
+    }
     tsdf_->freeGPU();
     tracker_->freeGPU();
     for (int i = 0; i < 2; ++i) {
@@ -217,6 +231,7 @@ void PipelineController::reset() {
     first_frame_  = true;
     frame_count_  = 0;
     metrics_      = PipelineMetrics{};
+    signal_conditioner_.reset();
     shared_mesh_.update(std::make_shared<meshing::MeshData>());
     state_.store(PipelineState::Idle);
     KFLOG_INFO("Pipeline", "System RESET: Volume cleared, pose re-centered, queues drained.");
@@ -268,10 +283,6 @@ void PipelineController::trackingLoop() {
             raw_queue_.pop();
         }
 
-        // Apply Zero-Latency CPU Super-Resolution (CAS)
-        // Enhance the raw RGB buffer *before* it's paired with 3D depth meshes natively
-        sensor::sr::applyCAS(raw->rgb, sensor::FRAME_W, sensor::FRAME_H, 0.85f);
-
         // Build processed frame here (using pool)
         auto frame = acquireFreeData();
         if (!frame) {
@@ -287,7 +298,9 @@ void PipelineController::trackingLoop() {
             d_min = hyperparams_.min_depth;
             d_max = hyperparams_.max_depth;
         }
+        signal_conditioner_.process(*raw, cuda_stream_, d_min, d_max);
         sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame, d_min, d_max);
+        sensor::computeNormals(*frame);
         
         // We can release 'raw' immediately after buildFrameData copies it
         sensor_->releaseFrame(std::move(raw));
@@ -439,6 +452,7 @@ void PipelineController::trackingLoop() {
             // We just don't integrate the frame. This keeps the model "clean".
             if (!is_lost) {
                  KFLOG_WARN("Pipeline", "Tracking lost! Suspension of TSDF integration. Entering relocalization mode...");
+                 signal_conditioner_.resetEMA();
             }
             state_.store(PipelineState::TrackingLost);
             releaseData(std::move(frame));

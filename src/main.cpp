@@ -9,7 +9,15 @@
 #include "gui/MainWindow.h"
 #include "utils/Logger.h"
 
+#ifdef _WIN32
+#include <mmsystem.h>
+#endif
+
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    timeBeginPeriod(1);
+#endif
+
     // Set OpenGL surface format globally before creating QApplication
     QSurfaceFormat fmt;
     fmt.setVersion(3, 3);
@@ -58,6 +66,11 @@ int main(int argc, char* argv[]) {
 
     kfusion::gui::MainWindow window;
     window.show();
+    const int exit_code = app.exec();
 
-    return app.exec();
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
+
+    return exit_code;
 }

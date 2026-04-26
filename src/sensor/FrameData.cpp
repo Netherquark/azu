@@ -17,95 +17,6 @@ inline float depthJumpThreshold(float depth_m) {
     return std::max(0.03f, depth_m * 0.05f);
 }
 
-void invalidatePixel(FrameData& frame, int idx) {
-    frame.depth_meters[idx] = 0.0f;
-    frame.vertices[idx]     = Eigen::Vector3f::Zero();
-    frame.normals[idx]      = Eigen::Vector3f::Zero();
-}
-
-void suppressBackgroundShadowPixels(FrameData& frame) {
-    const int W = frame.width;
-    const int H = frame.height;
-    std::vector<uint8_t> invalidate(frame.depth_meters.size(), 0);
-
-    #pragma omp parallel for schedule(static)
-    for (int y = 1; y < H - 1; ++y) {
-        for (int x = 1; x < W - 1; ++x) {
-            const int idx = y * W + x;
-            const float d = frame.depth_meters[idx];
-            if (d <= 0.0f) continue;
-
-            const float jump = depthJumpThreshold(d);
-            const int neighbors[4] = {
-                idx - 1,
-                idx + 1,
-                idx - W,
-                idx + W
-            };
-
-            int closer_neighbors = 0;
-            for (int nidx : neighbors) {
-                const float dn = frame.depth_meters[nidx];
-                if (dn > 0.0f && d - dn > jump) {
-                    ++closer_neighbors;
-                }
-            }
-
-            // Pixels significantly behind nearby foreground on multiple sides are
-            // usually Kinect edge-shadow bleed rather than trustworthy background.
-            if (closer_neighbors >= 2) {
-                invalidate[idx] = 1;
-            }
-        }
-    }
-
-    for (size_t i = 0; i < invalidate.size(); ++i) {
-        if (invalidate[i]) invalidatePixel(frame, static_cast<int>(i));
-    }
-}
-
-void bilateralFilter(FrameData& frame) {
-    const int W = frame.width;
-    const int H = frame.height;
-    std::vector<float> filtered = frame.depth_meters;
-
-    const float sigma_s = 2.0f; // Spatial sigma
-    const float sigma_r = 0.05f; // Range sigma (meters)
-
-    #pragma omp parallel for schedule(static)
-    for (int y = 2; y < H - 2; ++y) {
-        for (int x = 2; x < W - 2; ++x) {
-            int idx = y * W + x;
-            float d_c = frame.depth_meters[idx];
-            if (d_c <= 0.0f) continue;
-
-            float sum_w = 0.0f;
-            float sum_d = 0.0f;
-
-            for (int dy = -2; dy <= 2; ++dy) {
-                for (int dx = -2; dx <= 2; ++dx) {
-                    float d_n = frame.depth_meters[(y + dy) * W + (x + dx)];
-                    if (d_n <= 0.0f) continue;
-
-                    float dist_s_sq = static_cast<float>(dx*dx + dy*dy);
-                    float dist_r = std::abs(d_c - d_n);
-
-                    float w = std::exp(-dist_s_sq / (2.0f * sigma_s * sigma_s)) *
-                              std::exp(-(dist_r * dist_r) / (2.0f * sigma_r * sigma_r));
-                    
-                    sum_w += w;
-                    sum_d += w * d_n;
-                }
-            }
-
-            if (sum_w > 1e-6f) {
-                filtered[idx] = sum_d / sum_w;
-            }
-        }
-    }
-    frame.depth_meters = std::move(filtered);
-}
-
 void updateVerticesFromDepth(FrameData& frame) {
     const int W = frame.width;
     const int H = frame.height;
@@ -137,9 +48,6 @@ void buildFrameData(const uint16_t* raw_depth,
 {
     const int W = out.width;
     const int H = out.height;
-    const float fx_inv = 1.0f / static_cast<float>(FX);
-    const float fy_inv = 1.0f / static_cast<float>(FY);
-
     #pragma omp parallel for schedule(static)
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
@@ -151,9 +59,7 @@ void buildFrameData(const uint16_t* raw_depth,
                 out.normals[idx]      = Eigen::Vector3f::Zero();
             } else {
                 out.depth_meters[idx] = d;
-                float vx = (static_cast<float>(x) - static_cast<float>(CX)) * fx_inv * d;
-                float vy = (static_cast<float>(y) - static_cast<float>(CY)) * fy_inv * d;
-                out.vertices[idx] = Eigen::Vector3f(vx, vy, d);
+                out.vertices[idx] = Eigen::Vector3f::Zero();
                 out.normals[idx]  = Eigen::Vector3f::Zero(); // computed separately
             }
             // Copy RGB
@@ -163,10 +69,7 @@ void buildFrameData(const uint16_t* raw_depth,
         }
     }
 
-    suppressBackgroundShadowPixels(out);
-    bilateralFilter(out);
     updateVerticesFromDepth(out);
-    computeNormals(out);
 }
 
 void computeNormals(FrameData& frame) {

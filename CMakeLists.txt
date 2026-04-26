@@ -135,6 +135,11 @@ if(CUDA_AVAILABLE)
     list(APPEND ALL_SOURCES ${CUDA_SOURCES})
 endif()
 
+set(SIGNAL_BACKEND "OpenMP")
+if(CUDA_AVAILABLE)
+    set(SIGNAL_BACKEND "CUDA+OpenMP")
+endif()
+
 # ---- Build Target ----
 
 add_executable(KinectFusionQt ${ALL_SOURCES})
@@ -194,6 +199,10 @@ if(Eigen3_FOUND)
     target_link_libraries(KinectFusionQt PRIVATE Eigen3::Eigen)
 endif()
 
+if(WIN32)
+    target_link_libraries(KinectFusionQt PRIVATE winmm)
+endif()
+
 # tinygltf implementation moved to GLBExporter.cpp to avoid multiple definition errors
 
 # ---- Diagnostic Summary ----
@@ -206,6 +215,6 @@ if(CUDA_AVAILABLE)
     message(STATUS "  CUDA Arch:    ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 message(STATUS "  OpenMP:       ${OpenMP_CXX_FOUND}")
+message(STATUS "  Signal Path:  ${SIGNAL_BACKEND}")
 message(STATUS "  Qt Version:   ${Qt5_VERSION}")
 message(STATUS "--------------------------------------------")
-

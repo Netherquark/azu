@@ -11,6 +11,7 @@
 
 #include "sensor/KinectSensor.h"
 #include "sensor/FrameData.h"
+#include "sensor/SignalConditioner.h"
 #include "tracking/ICPTracker.h"
 #include "tsdf/TSDFVolume.h"
 #include "meshing/MarchingCubes.h"
@@ -78,6 +79,7 @@ public:
 private:
     FusionHyperparams          hyperparams_{FusionHyperparams::defaults()};
     mutable std::mutex         hyper_mutex_;
+    sensor::SignalConditioner  signal_conditioner_;
 
     // Components
     std::unique_ptr<sensor::KinectSensor>    sensor_;
@@ -150,6 +152,7 @@ private:
     std::atomic<float>                    mesh_extract_progress_{0.0f};
     std::atomic<float>                    export_progress_{0.0f};
     std::atomic<bool>                     use_gpu_{false};
+    sensor::cudaStream_t                  cuda_stream_ = nullptr;
     mutable std::mutex                    control_mutex_;
 
     void onRawFrame(std::shared_ptr<sensor::RawFrame> raw);
