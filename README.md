@@ -10,9 +10,10 @@ and Unity-ready GLB export. Runs on Fedora 43 with optional CUDA acceleration.
 - Live Kinect v1 capture via **libfreenect** (no OpenNI)
 - **High-Performance GPU Pipeline**: Fully GPU-resident architecture optimized for NVIDIA RTX 30/40/50 series GPUs.
 - **Image-Centric TSDF**: $O(W \times H)$ pixel-parallel integration for real-time fidelity.
-- **Real-Time Super Resolution**: OpenMP-accelerated AMD FidelityFX CAS filter for enhanced RGB clarity and noise reduction.
+- **Real-Time Super Resolution**: CUDA-accelerated or OpenMP-parallelized AMD FidelityFX CAS filters for enhanced RGB clarity.
 - **GPU-Resident ICP**: Multi-resolution tracking with block-reduced Hessian construction.
 - **Multi-Pass Marching Cubes**: Parallel mesh extraction via CUDA/Thrust (< 2ms per scan).
+- **Navigation Gizmo**: Blender-style interactive 3D axis gizmo for orientation control.
 - **OpenGL 3.3** real-time preview (point cloud + mesh modes)
 - **PLY** (binary) and **GLB** (Unity-ready) export via tinygltf
 - Qt5 GUI with live metrics panel
@@ -111,6 +112,7 @@ make -j$(nproc)
 6. **Navigate**: Use **Blender-like** controls for inspection:
    - **LMB**: Orbit around target.
    - **RMB + X/Y/Z**: Axis-locked panning.
+   - **Interactive Gizmo**: Click and drag the XYZ gizmo in the bottom-right to rotate.
    - **Tab**: Switch to **Free Flight** (WASD + Q/E to fly).
    - **F**: Focus back on the origin.
 7. **Export**: Once satisfied, click **Export PLY** or **Export GLB**.
@@ -148,8 +150,8 @@ Kinect HW
 KinectSensor (libfreenect, capture thread)
    │  RawFrame (depth 11-bit + RGB 640×480)
    ▼
-CPU Preprocessing (AMD FSR CAS Super Resolution)
-   │
+Preprocessor (Unified Backend: CPU/CUDA)
+   │  AMD FSR CAS Super Resolution + Denoising
    ▼
 Pipeline (GPU Resident)
    │

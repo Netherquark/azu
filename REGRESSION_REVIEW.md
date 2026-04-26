@@ -27,8 +27,15 @@ This document tracks the resolution of previously identified functional regressi
 - **Problem:** State conversion using `std::asin` was prone to `NaN` errors at steep angles.
 - **Resolution:** The conversion logic in `Camera::updateFreeFromOrbit` and `updateOrbitFromFree` has been simplified to use direct trigonometric projections (`cos`/`sin`) and forward vector calculation, eliminating the risky inverse trigonometric calls.
 
+## 6. Resolved: GPU Path "Broken Signal" & Race Conditions
+**Status: FIXED**
+- **Problem:** The GPU pipeline suffered from intermittent tracking failures ("broken signals") and occasional crashes during high-throughput integration.
+- **Resolution:** 
+    - **Triple-Buffering:** A `TripleBuffer` model for `ModelFrame` was implemented, separating the "Integration" (writing), "Tracking" (reading), and "Ready" states. This eliminated VRAM race conditions where the tracker would read a partially-integrated model.
+    - **Super Resolution (CAS) Fix:** The CUDA-accelerated CAS filter was refined to handle edge cases in the RGB feed, preventing "black pixel" artifacts that previously poisoned the ICP correspondence search.
+    - **Relocalization Logic:** Added a specialized relocalization mode that triggers when tracking is lost, using relaxed distance/angle thresholds to recover the pose without requiring a full system reset.
+
 ---
 
 ## Conclusion
 The "Blender-like" navigation system is now technically sound and fully integrated with the UI. The "Split-State" regression has been eliminated, and the physics engine is now robust against framerate fluctuations.
-

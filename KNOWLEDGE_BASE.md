@@ -103,10 +103,21 @@ The system orchestrates four primary threads managed by `PipelineController`:
     - `computeNormals()`: Approximates surface normals using cross-products of neighboring vertices.
     - `buildFramePyramid()`: Generates 3-level downsampled pyramid (1x, 0.5x, 0.25x) for multi-resolution ICP.
 
-#### SuperResolution.h / .cpp
+#### Preprocessor.h / .cpp
+- **The Unified Preprocessing Backend**: Manages both CPU (OpenMP) and GPU (CUDA) signal conditioning pipelines.
+- **Auto-Selection Logic**: Automatically detects CUDA availability and selects the optimal backend based on user preference and hardware capabilities.
+- **State Management**: Orchestrates temporal state resets (EMA buffers) during pipeline relocalization or tracking recovery.
+
+#### SuperResolution.h / .cpp / SuperResolution_cuda.cu
 - **Purpose**: Real-time Super Resolution and edge enhancement of the Kinect RGB feed.
-- **Algorithm**: Pure C++ port of AMD's FidelityFX Contrast Adaptive Sharpening (FSR 1.0 CAS) math.
-- **Performance**: Aggressively parallelized via `#pragma omp parallel for` (cache-coherent row processing) to execute well under the 30fps budget on standard CPU hardware (e.g. Ryzen 5650U). Applies enhancement *in-place* to `RawFrame->rgb` ensuring geometric depth relationships map identically at 640x480.
+- **Algorithms**:
+    - **CPU Path**: Pure C++ port of AMD's FidelityFX Contrast Adaptive Sharpening (FSR 1.0 CAS) math, parallelized via `OpenMP`.
+    - **GPU Path**: High-performance CUDA implementation of the CAS kernel, executing directly on the GPU to minimize host-device transfers.
+- **Performance**: Applies enhancement *in-place* ensuring geometric depth relationships map identically at 640x480.
+
+#### SignalConditioner.h / .cpp / SignalConditioner_cuda.cu
+- **Purpose**: Depth denoising and structural filtering.
+- **Features**: Implements EMA temporal smoothing and Guided Filtering with the fixes detailed in the "Signal Conditioning" section above.
 
 ---
 
@@ -188,6 +199,11 @@ The system orchestrates four primary threads managed by `PipelineController`:
 - **Physics Engine**: Implements frame-rate independent movement using `deltaTime`, providing consistent traversal speed across varying hardware performance.
 - **Interaction**: Features axis-locked panning (X, Y, Z) and dedicated UI slider binding.
 
+#### NavigationGizmo.h / .cpp
+- **Interactive 3D Widget**: A custom Qt widget that visualizes the camera orientation using a 3D axis gizmo.
+- **Interaction**: Supports clicking and dragging to rotate the camera, with colors matching industry standards (X: Red, Y: Green, Z: Blue).
+- **Sorting**: Implements painter's algorithm (Z-sorting) for correct occlusion of axis elements in 2D space.
+
 ---
 
 ### 2.6 Application & GUI Modules
@@ -247,7 +263,13 @@ Following a rigorous adversarial review, the system has been hardened for produc
 
 ### 5.3 Build System & Engineering
 - **Robust Dependency Discovery**: Hardened `CMakeLists.txt` with reliable `Qt5` discovery paths and proper implementation guards for headers like `tinygltf`.
-- **Modernized Qt Build Pipeline**: Transitioned to `CMAKE_AUTOMOC`, `CMAKE_AUTOUIC`, and `CMAKE_AUTORCC`. All project headers are now explicitly tracked in the build target, ensuring robust Meta-Object Compiler (MOC) generation and eliminating "undefined reference" errors during incremental builds or post-`git pull` states.
+- **Ninja Build Integration**: Transitioned the primary build recommendation to **Ninja**, significantly reducing incremental compile times and improving build reliability on multi-core systems.
+- **Modernized Qt Build Pipeline**: Transitioned to `CMAKE_AUTOMOC`, `CMAKE_AUTOUIC`, and `CMAKE_AUTORCC`. All project headers are now explicitly tracked in the build target, ensuring robust Meta-Object Compiler (MOC) generation.
+
+### 5.4 GPU Path Hardening (Stability Rounds 1-5)
+- **Triple-Buffer Model Management**: Implemented a robust triple-buffering system for `ModelFrame` (Front/Back/Ready indices) in `PipelineController`. This eliminates race conditions between the Integration thread (writing the new model) and the Tracking thread (reading the stable model).
+- **CUDA/Host Sync Points**: Optimized synchronization barriers during pipeline Reset/Restart to prevent `cudaErrorInvalidDevice` or `cudaErrorIllegalAddress` during rapid UI state transitions.
+- **Kernel Robustness**: Fixed boundary conditions in `TSDFVolume_cuda.cu` and `ICPTracker_cuda.cu` that previously caused intermittent tracking failure or visual artifacts ("broken signals") when the sensor approached volume edges.
 
 ---
 

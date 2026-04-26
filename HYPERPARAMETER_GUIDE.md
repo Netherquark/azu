@@ -18,7 +18,7 @@ The TSDF (Truncated Signed Distance Function) volume is where the 3D model is st
 | Parameter | UI Label | Range | Default | Significance |
 | :--- | :--- | :--- | :--- | :--- |
 | `resolution` | Resolution (³) | 64 - 512 | 256 | Number of voxels per axis. Total memory scales as $O(N^3)$. |
-| `voxel_size` | Voxel size (m) | 0.003 - 0.05 | 0.01 | Physical size of one voxel. `resolution * voxel_size` = physical volume width. |
+| `voxel_size` | Voxel size (m) | 0.003 - 0.05 | 0.005 | Physical size of one voxel. `resolution * voxel_size` = physical volume width. |
 | `truncation` | Truncation (m) | 0.01 - 0.25 | 0.03 | The "thickness" of the surface update region. Usually set to 3-4x the voxel size. |
 | `max_weight` | Max weight | 1 - 512 | 128 | Limits temporal averaging. Lower values allow the model to adapt faster to movement or drift. |
 | `origin` | Origin X/Y/Z | -4.0 - 4.0 | -1.28... | World coordinates of the bottom-front-left corner of the volume. |
