@@ -201,8 +201,10 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
             if (v_ref.z() <= 0.001f) continue;
             acc.valid_live++;
 
-            float model_x = fx * v_ref.x() / v_ref.z() + cx;
-            float model_y = fy * v_ref.y() / v_ref.z() + cy;
+            // Project v_ref into the model frame (always 640x480)
+            // Use full-res intrinsics here, NOT level-adjusted ones!
+            float model_x = static_cast<float>(sensor::FX) * v_ref.x() / v_ref.z() + static_cast<float>(sensor::CX);
+            float model_y = static_cast<float>(sensor::FY) * v_ref.y() / v_ref.z() + static_cast<float>(sensor::CY);
 
             int mx = static_cast<int>(std::round(model_x));
             int my = static_cast<int>(std::round(model_y));
