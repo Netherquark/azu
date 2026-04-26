@@ -113,7 +113,7 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
                 vox.tsdf   = (vox.tsdf * w_old + tsdf_new * w_new) / (w_old + w_new + 1e-6f);
                 vox.weight = w_sum;
 
-                if (rgb) {
+                if (rgb && sdf > -trunc * 0.2f) { // Strict check to prevent backside smearing
                     int pidx = (py * W + px) * 3;
                     vox.r = static_cast<uint8_t>((vox.r * w_old + rgb[pidx+0]) / (w_old + 1.0f + 1e-6f));
                     vox.g = static_cast<uint8_t>((vox.g * w_old + rgb[pidx+1]) / (w_old + 1.0f + 1e-6f));

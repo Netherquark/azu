@@ -64,29 +64,42 @@ void suppressBackgroundShadowPixels(FrameData& frame) {
     }
 }
 
-void medianFilter3x3(FrameData& frame) {
+void bilateralFilter(FrameData& frame) {
     const int W = frame.width;
     const int H = frame.height;
     std::vector<float> filtered = frame.depth_meters;
 
-    #pragma omp parallel for schedule(static)
-    for (int y = 1; y < H - 1; ++y) {
-        for (int x = 1; x < W - 1; ++x) {
-            int idx = y * W + x;
-            if (frame.depth_meters[idx] <= 0.0f) continue;
+    const float sigma_s = 2.0f; // Spatial sigma
+    const float sigma_r = 0.05f; // Range sigma (meters)
 
-            float window[9];
-            int count = 0;
-            for (int dy = -1; dy <= 1; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
-                    float d = frame.depth_meters[(y + dy) * W + (x + dx)];
-                    if (d > 0.0f) window[count++] = d;
+    #pragma omp parallel for schedule(static)
+    for (int y = 2; y < H - 2; ++y) {
+        for (int x = 2; x < W - 2; ++x) {
+            int idx = y * W + x;
+            float d_c = frame.depth_meters[idx];
+            if (d_c <= 0.0f) continue;
+
+            float sum_w = 0.0f;
+            float sum_d = 0.0f;
+
+            for (int dy = -2; dy <= 2; ++dy) {
+                for (int dx = -2; dx <= 2; ++dx) {
+                    float d_n = frame.depth_meters[(y + dy) * W + (x + dx)];
+                    if (d_n <= 0.0f) continue;
+
+                    float dist_s_sq = static_cast<float>(dx*dx + dy*dy);
+                    float dist_r = std::abs(d_c - d_n);
+
+                    float w = std::exp(-dist_s_sq / (2.0f * sigma_s * sigma_s)) *
+                              std::exp(-(dist_r * dist_r) / (2.0f * sigma_r * sigma_r));
+                    
+                    sum_w += w;
+                    sum_d += w * d_n;
                 }
             }
 
-            if (count >= 5) { // Need a majority to be valid
-                std::sort(window, window + count);
-                filtered[idx] = window[count / 2];
+            if (sum_w > 1e-6f) {
+                filtered[idx] = sum_d / sum_w;
             }
         }
     }
@@ -151,7 +164,7 @@ void buildFrameData(const uint16_t* raw_depth,
     }
 
     suppressBackgroundShadowPixels(out);
-    medianFilter3x3(out);
+    bilateralFilter(out);
     updateVerticesFromDepth(out);
     computeNormals(out);
 }

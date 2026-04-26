@@ -335,18 +335,50 @@ void PipelineController::trackingLoop() {
 
         // Run ICP
         Eigen::Matrix4f prev_pose;
+        Eigen::Matrix4f predicted_pose;
         {
             std::lock_guard<std::mutex> lk(pose_mutex_);
             prev_pose = current_pose_;
+            
+            // Motion Model: predicted = current * (last_delta)
+            // last_delta = last_pose.inv * current_pose
+            static Eigen::Matrix4f last_pose = Eigen::Matrix4f::Identity();
+            Eigen::Matrix4f delta = last_pose.inverse() * current_pose_;
+            predicted_pose = current_pose_ * delta;
+            last_pose = current_pose_;
         }
 
         tracking::ICPResult icp_result;
+        bool is_lost = (state_.load() == PipelineState::TrackingLost);
+
         if (use_gpu_.load()) {
 #ifdef CUDA_ENABLED
-            icp_result = tracker_->trackGPU(pyramid, *model_ref, prev_pose);
+            icp_result = tracker_->trackGPU(pyramid, *model_ref, predicted_pose);
 #endif
         } else {
-            icp_result = tracker_->track(pyramid, *model_ref, prev_pose);
+            if (is_lost) {
+                // RELOCALIZATION MODE: Try harder to catch the pose
+                tracking::ICPParams recovery_params = hyperparams_.icp;
+                recovery_params.dist_threshold *= 3.0f; // 30cm instead of 10cm
+                recovery_params.angle_threshold = 60.0f;
+                
+                // Backup original params
+                tracking::ICPParams original_params = tracker_->params();
+                tracker_->setParams(recovery_params);
+                
+                // Try relocalizing at the coarsest level first with more iterations
+                icp_result = tracker_->track(pyramid, *model_ref, prev_pose);
+                
+                // Restore params
+                tracker_->setParams(original_params);
+            } else {
+                icp_result = tracker_->track(pyramid, *model_ref, predicted_pose);
+                
+                // If predicted pose fails, retry with stationary pose (safety fallback)
+                if (!icp_result.tracking_ok) {
+                    icp_result = tracker_->track(pyramid, *model_ref, prev_pose);
+                }
+            }
         }
 
         // Update tracking fps
@@ -365,18 +397,10 @@ void PipelineController::trackingLoop() {
             static int lost_log = 0;
             if (++lost_log % 45 == 1) {
                 std::ostringstream oss;
-                oss << "ICP/tracking failed — reason: "
-                    << (icp_result.valid_live_points == 0 ? "NO_LIVE_DEPTH " : "")
-                    << (icp_result.valid_model_points == 0 ? "NO_MODEL_SURFACE " : "")
-                    << (icp_result.inliers == 0 ? "NO_CORRESPONDENCES " : "")
-                    << "\n    [Metrics] inliers=" << icp_result.inliers
+                oss << (is_lost ? "[RELOCALIZING...] " : "[TRACKING LOST] ")
+                    << "ICP failed — inliers=" << icp_result.inliers
                     << " err=" << icp_result.error
-                    << " converged=" << (icp_result.converged ? "yes" : "no")
-                    << "\n    [Diagnostics] live_pts=" << icp_result.valid_live_points
-                    << " model_pts=" << icp_result.valid_model_points
-                    << " projected=" << icp_result.projected_points
-                    << " dist_fail=" << icp_result.dist_filtered
-                    << " angle_fail=" << icp_result.angle_filtered;
+                    << " dist_fail=" << icp_result.dist_filtered;
                 KFLOG_WARN("Pipeline", oss.str());
             }
         }
@@ -413,7 +437,7 @@ void PipelineController::trackingLoop() {
 }
 
 void PipelineController::integrationLoop() {
-    static constexpr int MESH_TRIGGER_FRAMES = 10; // trigger mesh update every N integrated frames
+    static constexpr int MESH_TRIGGER_FRAMES = 5; // trigger mesh update every N integrated frames
     int frames_since_mesh = 0;
 
     while (running_.load()) {

@@ -233,7 +233,13 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
             Eigen::Vector3f cross = live_v.cross(n_live_cam);
 
             float J[6] = { n_live_cam.x(), n_live_cam.y(), n_live_cam.z(), cross.x(), cross.y(), cross.z() };
-            acc.add(J, err);
+
+            // Huber weight for robustness
+            float abs_err = std::abs(err);
+            float huber_k = 0.05f; // Huber threshold in meters
+            float w = (abs_err <= huber_k) ? 1.0f : huber_k / abs_err;
+
+            acc.add(J, err * w);
         }
     }
 
