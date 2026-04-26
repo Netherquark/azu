@@ -462,16 +462,20 @@ std::shared_ptr<MeshData> MarchingCubes::extract(const tsdf::TSDFVolume& volume,
 
                 Eigen::Vector3f edge_verts[12];
                 Eigen::Vector3f edge_norms[12];
+                uint8_t         edge_colors[12][3];
+
                 for (int e = 0; e < 12; ++e) {
                     if (edge_table[cube_idx] & (1 << e)) {
                         int c0 = EDGE_CORNERS[e][0];
                         int c1 = EDGE_CORNERS[e][1];
+                        
+                        const tsdf::Voxel& vox0 = volume.voxelAt(x + CORNER_OFFSETS[c0][0], y + CORNER_OFFSETS[c0][1], z + CORNER_OFFSETS[c0][2]);
+                        const tsdf::Voxel& vox1 = volume.voxelAt(x + CORNER_OFFSETS[c1][0], y + CORNER_OFFSETS[c1][1], z + CORNER_OFFSETS[c1][2]);
+
                         edge_verts[e] = interpolateEdge(
                             corner_pos[c0], corner_vals[c0],
                             corner_pos[c1], corner_vals[c1]);
                         
-                        // Fix: Smooth Normals via Central Differences of interpolated TSDF
-                        // For efficiency, we can just use the corner normals and interpolate them
                         Eigen::Vector3f n0 = computeNormal(volume, 
                             x + CORNER_OFFSETS[c0][0], 
                             y + CORNER_OFFSETS[c0][1], 
@@ -483,20 +487,27 @@ std::shared_ptr<MeshData> MarchingCubes::extract(const tsdf::TSDFVolume& volume,
                         
                         float t = (std::abs(corner_vals[c0]) < 1e-6f) ? 0.0f : 
                                   (corner_vals[c0] / (corner_vals[c0] - corner_vals[c1]));
+                        t = std::max(0.0f, std::min(1.0f, t));
+
                         edge_norms[e] = (n0 + t * (n1 - n0)).normalized();
+                        
+                        edge_colors[e][0] = static_cast<uint8_t>(vox0.r + t * (static_cast<float>(vox1.r) - vox0.r));
+                        edge_colors[e][1] = static_cast<uint8_t>(vox0.g + t * (static_cast<float>(vox1.g) - vox0.g));
+                        edge_colors[e][2] = static_cast<uint8_t>(vox0.b + t * (static_cast<float>(vox1.b) - vox0.b));
                     }
                 }
 
-                const tsdf::Voxel& vox = volume.voxelAt(x, y, z);
                 for (int t = 0; tri_table[cube_idx][t] != -1; t += 3) {
-                    for (int i = 0; i < 3; ++i) {
+                    // Reverse winding (2, 1, 0 instead of 0, 1, 2) to fix front-face culling
+                    for (int i = 2; i >= 0; --i) {
                         int e = tri_table[cube_idx][t + i];
                         uint32_t vidx = static_cast<uint32_t>(local_mesh.positions.size());
                         local_mesh.positions.push_back(edge_verts[e]);
+                        // TSDF gradient already points OUT (toward camera), so keep it positive
                         local_mesh.normals.push_back(edge_norms[e]);
-                        local_mesh.colors.push_back(vox.r);
-                        local_mesh.colors.push_back(vox.g);
-                        local_mesh.colors.push_back(vox.b);
+                        local_mesh.colors.push_back(edge_colors[e][0]);
+                        local_mesh.colors.push_back(edge_colors[e][1]);
+                        local_mesh.colors.push_back(edge_colors[e][2]);
                         local_mesh.indices.push_back(vidx);
                     }
                 }
