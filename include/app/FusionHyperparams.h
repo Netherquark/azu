@@ -14,6 +14,7 @@ struct FusionHyperparams {
     float min_depth = 0.30f;
     float max_depth = 2.50f;
 
+
     tsdf::TSDFParams    tsdf{};
     tracking::ICPParams icp{};
 

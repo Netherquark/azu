@@ -169,66 +169,10 @@ void SignalConditioner::preprocessRgb(std::vector<uint8_t>& rgb) {
     bilateralDenoiseRgb(rgb, rgb_scratch_);
     rgb.swap(rgb_scratch_);
 
-    const int tiles_x = (FRAME_W + kClaheTileSize - 1) / kClaheTileSize;
-    const int tiles_y = (FRAME_H + kClaheTileSize - 1) / kClaheTileSize;
-
-    // Each tile operates on a disjoint region of rgb[], so the collapsed loop
-    // is safe to parallelize. hist/lut/etc. are all declared inside the loop
-    // body and are therefore private to each thread.
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int tile_y = 0; tile_y < tiles_y; ++tile_y) {
-        for (int tile_x = 0; tile_x < tiles_x; ++tile_x) {
-            const int y0 = tile_y * kClaheTileSize;
-            const int y1 = std::min(y0 + kClaheTileSize, FRAME_H);
-            const int x0 = tile_x * kClaheTileSize;
-            const int x1 = std::min(x0 + kClaheTileSize, FRAME_W);
-            const int tile_pixels = (x1 - x0) * (y1 - y0);
-            const int clip_limit  = std::max(1, tile_pixels / 8);
-
-            std::array<int, 256> hist{};
-            for (int y = y0; y < y1; ++y) {
-                for (int x = x0; x < x1; ++x) {
-                    const int idx = (y * FRAME_W + x) * 3;
-                    ++hist[static_cast<int>(rgbLuma(&rgb[idx]))];
-                }
-            }
-
-            int excess = 0;
-            for (int& bin : hist) {
-                if (bin > clip_limit) {
-                    excess += bin - clip_limit;
-                    bin = clip_limit;
-                }
-            }
-
-            const int redistribute = excess / 256;
-            const int remainder = excess % 256;
-            for (int i = 0; i < 256; ++i) {
-                hist[i] += redistribute + (i < remainder ? 1 : 0);
-            }
-
-            std::array<uint8_t, 256> lut{};
-            int cumulative = 0;
-            for (int i = 0; i < 256; ++i) {
-                cumulative += hist[i];
-                lut[i] = static_cast<uint8_t>((255 * cumulative) / std::max(1, tile_pixels));
-            }
-
-            for (int y = y0; y < y1; ++y) {
-                for (int x = x0; x < x1; ++x) {
-                    const int pixel_idx = y * FRAME_W + x;
-                    const int rgb_idx = pixel_idx * 3;
-                    const float base_luma = std::max(1.0f, rgbLuma(&rgb[rgb_idx]));
-                    const float mapped_luma = static_cast<float>(lut[static_cast<int>(base_luma)]);
-                    const float gain = std::clamp(mapped_luma / base_luma, 0.6f, 1.8f);
-
-                    rgb[rgb_idx + 0] = clampToByte(static_cast<float>(rgb[rgb_idx + 0]) * gain);
-                    rgb[rgb_idx + 1] = clampToByte(static_cast<float>(rgb[rgb_idx + 1]) * gain);
-                    rgb[rgb_idx + 2] = clampToByte(static_cast<float>(rgb[rgb_idx + 2]) * gain);
-                }
-            }
-        }
-    }
+    // Block-based CLAHE removed because independent 8x8 tiled histogram equalization
+    // without bilinear interpolation causes false grid boundary artifacts that corrupt
+    // the downstream guided depth filter. We rely on the `medianBlur3x3` for noise 
+    // reduction and `applyCAS` (SuperResolution) later for contrast enhancement.
 
     medianBlur3x3(rgb);
 }
@@ -286,6 +230,7 @@ void SignalConditioner::applyDepthEma(std::vector<uint16_t>& depth, float min_de
     for (int i = 0; i < FRAME_W * FRAME_H; ++i) {
         const float depth_m = rawDepthToMeters(depth[i]);
         if (!isValidDepthMeters(depth_m, min_depth_m, max_depth_m)) {
+            ema_buf_m_[i] = 0.0f; // Prevent ghosting by resetting stale EMA values
             continue;
         }
 
@@ -362,6 +307,13 @@ void SignalConditioner::guidedDepthFilter(std::vector<uint16_t>& depth, float mi
         for (int x = 0; x < FRAME_W; ++x) {
             const int idx = y * FRAME_W + x;
             const float center_depth = rawDepthToMeters(depth[idx]);
+            
+            // Prevent guided filter from treating empty space as a massive hole-filler 
+            // which smears sharp object geometry boundaries into the void.
+            if (!isValidDepthMeters(center_depth, min_depth_m, max_depth_m)) {
+                continue;
+            }
+
             const float center_luma = guidance_luma_[idx];
 
             float sum_weights = 0.0f;

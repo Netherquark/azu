@@ -74,8 +74,11 @@ bool PipelineController::start() {
 
     running_.store(true);
     state_.store(PipelineState::Running);
-    first_frame_   = true;
-    frame_count_   = 0;
+    first_frame_          = true;
+    frame_count_          = 0;
+    ui_skip_counter_      = 0;
+    lost_log_counter_     = 0;
+    success_log_counter_  = 0;
     current_pose_  = Eigen::Matrix4f::Identity();
     // Set frame callback before starting capture
     sensor_->setFrameCallback([this](std::shared_ptr<sensor::RawFrame> raw) {
@@ -236,8 +239,11 @@ void PipelineController::reset() {
         current_pose_ = Eigen::Matrix4f::Identity();
         last_pose_ = Eigen::Matrix4f::Identity();
     }
-    first_frame_  = true;
-    frame_count_  = 0;
+    first_frame_          = true;
+    frame_count_          = 0;
+    ui_skip_counter_      = 0;
+    lost_log_counter_     = 0;
+    success_log_counter_  = 0;
     metrics_      = PipelineMetrics{};
     if (preprocessor_) {
         preprocessor_->reset();
