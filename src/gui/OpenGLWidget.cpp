@@ -185,26 +185,24 @@ void OpenGLWidget::updatePhysics() {
     float dt = static_cast<float>(frame_timer_.restart()) / 1000.0f;
     if (!renderer_) return;
 
-    if (renderer_->camera().mode() == rendering::Camera::Mode::Free) {
-        float speed = 2.0f; // meters per second
-        if (pressed_keys_.count(Qt::Key_Shift)) speed *= 3.0f;
+    float speed = 2.0f; // meters per second
+    if (pressed_keys_.count(Qt::Key_Shift)) speed *= 3.0f;
 
-        Eigen::Vector3f move_dir(0, 0, 0);
+    Eigen::Vector3f move_dir(0, 0, 0);
 
-        if (pressed_keys_.count(Qt::Key_W)) move_dir.z() += 1.0f;
-        if (pressed_keys_.count(Qt::Key_S)) move_dir.z() -= 1.0f;
-        if (pressed_keys_.count(Qt::Key_A)) move_dir.x() -= 1.0f;
-        if (pressed_keys_.count(Qt::Key_D)) move_dir.x() += 1.0f;
-        if (pressed_keys_.count(Qt::Key_Q)) move_dir.y() -= 1.0f;
-        if (pressed_keys_.count(Qt::Key_E)) move_dir.y() += 1.0f;
+    if (pressed_keys_.count(Qt::Key_W)) move_dir.z() += 1.0f;
+    if (pressed_keys_.count(Qt::Key_S)) move_dir.z() -= 1.0f;
+    if (pressed_keys_.count(Qt::Key_A)) move_dir.x() -= 1.0f;
+    if (pressed_keys_.count(Qt::Key_D)) move_dir.x() += 1.0f;
+    if (pressed_keys_.count(Qt::Key_Q)) move_dir.y() -= 1.0f;
+    if (pressed_keys_.count(Qt::Key_E)) move_dir.y() += 1.0f;
 
-        if (move_dir.squaredNorm() > 0.001f) {
-            move_dir.normalize();
-            renderer_->camera().move(move_dir, speed * dt);
-            update();
-        }
+    if (move_dir.squaredNorm() > 0.001f) {
+        move_dir.normalize();
+        renderer_->camera().move(move_dir, speed * dt);
+        update();
 
-        // Sync sliders in Free mode too
+        // Sync sliders
         auto& cam = renderer_->camera();
         emit cameraRotated(
             -cam.elevation() * 180.0f / M_PI,

@@ -100,13 +100,13 @@ void Camera::updateOrbitFromFree() {
 }
 
 void Camera::reset() {
-    mode_ = Mode::Orbit;
+    mode_ = Mode::Free; // Default to free for "flying around"
     yaw_       = 0.0f;
-    pitch_     = 0.3f;
+    pitch_     = 0.0f;
     roll_      = 0.0f;
-    distance_  = 3.0f;
-    target_    = Eigen::Vector3f(0.0f, 0.0f, 1.0f);
-    position_  = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
+    distance_  = 2.0f;
+    target_    = Eigen::Vector3f(0.0f, 0.0f, 1.28f);
+    position_  = Eigen::Vector3f(0.0f, 0.0f, -1.0f); // Place camera slightly back
 }
 
 Eigen::Matrix4f Camera::viewMatrix() const {

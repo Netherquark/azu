@@ -140,11 +140,9 @@ void PreviewRenderer::resize(int w, int h) {
 
 void PreviewRenderer::render() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    float aspect = static_cast<float>(viewport_w_) / static_cast<float>(viewport_h_);
-    Eigen::Matrix4f V   = camera_.viewMatrix();
-    Eigen::Matrix4f P   = camera_.projectionMatrix(aspect);
-    Eigen::Matrix4f MVP = P * V;
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glEnable(GL_PROGRAM_POINT_SIZE);
 
     if (mode_ == RenderMode::PointCloud) {
         renderPointCloud();
@@ -154,8 +152,6 @@ void PreviewRenderer::render() {
         // Mesh mode selected but no extraction yet (or empty) — keep showing live depth cloud.
         renderPointCloud();
     }
-
-    (void)MVP;
 }
 
 void PreviewRenderer::initPointCloudBuffers() {
@@ -265,9 +261,11 @@ void PreviewRenderer::uploadMesh(const meshing::MeshData& mesh) {
 void PreviewRenderer::renderPointCloud() {
     if (!pc_shader_.isValid() || pc_count_ == 0) return;
 
-    const Eigen::Matrix4f P   = sensorProjection(viewport_w_, viewport_h_);
+    float aspect = static_cast<float>(viewport_w_) / static_cast<float>(viewport_h_);
+    Eigen::Matrix4f V   = camera_.viewMatrix();
+    Eigen::Matrix4f P   = camera_.projectionMatrix(aspect);
     const Eigen::Matrix4f F   = kinectToOpenGL();
-    const Eigen::Matrix4f MVP = P * F;
+    const Eigen::Matrix4f MVP = P * V * F;
 
     pc_shader_.use();
     pc_shader_.setUniformMat4("uMVP", MVP.data());
