@@ -24,7 +24,8 @@ class ControlPanel;
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    explicit MainWindow(sensor::PreprocessBackend preferred_backend = sensor::PreprocessBackend::Auto,
+                        QWidget* parent = nullptr);
     ~MainWindow() override;
 
 protected:

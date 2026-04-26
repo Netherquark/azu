@@ -16,14 +16,14 @@
 namespace kfusion {
 namespace gui {
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(sensor::PreprocessBackend preferred_backend, QWidget* parent)
     : QMainWindow(parent)
 {
     setWindowTitle("KinectFusionQt");
     resize(1600, 900);
     updateGlobalStyle();
 
-    pipeline_ = std::make_unique<app::PipelineController>();
+    pipeline_ = std::make_unique<app::PipelineController>(preferred_backend);
     setupUI();
     connectSignals();
 

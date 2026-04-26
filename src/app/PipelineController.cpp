@@ -5,6 +5,7 @@
 #include "export/GLBExporter.h"
 #include "export/PLYExporter.h"
 #include "utils/Logger.h"
+#include "utils/Timer.h"
 #include <QCoreApplication>
 #include <iostream>
 #include <sstream>
@@ -22,8 +23,9 @@ namespace app {
 
 using namespace std::chrono;
 
-PipelineController::PipelineController()
-    : current_pose_(Eigen::Matrix4f::Identity())
+PipelineController::PipelineController(sensor::PreprocessBackend preferred_backend)
+    : preferred_backend_(preferred_backend),
+      current_pose_(Eigen::Matrix4f::Identity())
 {
     syncIcpDepthFromRange(hyperparams_);
     sensor_  = std::make_unique<sensor::KinectSensor>();
@@ -75,8 +77,6 @@ bool PipelineController::start() {
     first_frame_   = true;
     frame_count_   = 0;
     current_pose_  = Eigen::Matrix4f::Identity();
-    signal_conditioner_.reset();
-
     // Set frame callback before starting capture
     sensor_->setFrameCallback([this](std::shared_ptr<sensor::RawFrame> raw) {
         onRawFrame(std::move(raw));
@@ -120,6 +120,11 @@ bool PipelineController::start() {
     tsdf_->setGPUEnabled(false);
     KFLOG_INFO("Pipeline", "Using CPU-only path (CUDA not enabled in build).");
 #endif
+
+    configurePreprocessor();
+    if (preprocessor_) {
+        preprocessor_->reset();
+    }
 
     // Launch pipeline threads
     tracking_thread_    = std::thread(&PipelineController::trackingLoop, this);
@@ -234,10 +239,24 @@ void PipelineController::reset() {
     first_frame_  = true;
     frame_count_  = 0;
     metrics_      = PipelineMetrics{};
-    signal_conditioner_.reset();
+    if (preprocessor_) {
+        preprocessor_->reset();
+    }
     shared_mesh_.update(std::make_shared<meshing::MeshData>());
     state_.store(PipelineState::Idle);
     KFLOG_INFO("Pipeline", "System RESET: Volume cleared, pose re-centered, queues drained.");
+}
+
+void PipelineController::configurePreprocessor() {
+    sensor::PreprocessBackend resolved = sensor::PreprocessBackend::CPU;
+    preprocessor_ = sensor::makePreprocessor(preferred_backend_,
+                                             use_gpu_.load(),
+                                             cuda_stream_,
+                                             &resolved);
+    active_backend_.store(resolved);
+    KFLOGF_INFO("Pipeline", "Preprocessor backend: requested=%s active=%s",
+                sensor::backendName(preferred_backend_),
+                sensor::backendName(resolved));
 }
 
 // Called from sensor capture thread — must be lightweight
@@ -301,7 +320,9 @@ void PipelineController::trackingLoop() {
             d_min = hyperparams_.min_depth;
             d_max = hyperparams_.max_depth;
         }
-        signal_conditioner_.process(*raw, cuda_stream_, d_min, d_max);
+        if (preprocessor_) {
+            preprocessor_->process(*raw, d_min, d_max);
+        }
         sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame, d_min, d_max);
         sensor::computeNormals(*frame);
         
@@ -456,7 +477,9 @@ void PipelineController::trackingLoop() {
             // We just don't integrate the frame. This keeps the model "clean".
             if (!is_lost) {
                  KFLOG_WARN("Pipeline", "Tracking lost! Suspension of TSDF integration. Entering relocalization mode...");
-                 signal_conditioner_.resetEMA();
+                 if (preprocessor_) {
+                     preprocessor_->resetTemporalState();
+                 }
             }
             state_.store(PipelineState::TrackingLost);
             releaseData(std::move(frame));

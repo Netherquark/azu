@@ -6,6 +6,10 @@
 #include <chrono>
 #include <iostream>
 
+#ifdef HAVE_FREENECT
+#include <libfreenect/libfreenect.h>
+#endif
+
 namespace kfusion {
 namespace sensor {
 
@@ -19,6 +23,7 @@ KinectSensor::KinectSensor() {
 
 KinectSensor::~KinectSensor() {
     stop();
+#ifdef HAVE_FREENECT
     if (device_) {
         freenect_close_device(device_);
         device_ = nullptr;
@@ -27,9 +32,14 @@ KinectSensor::~KinectSensor() {
         freenect_shutdown(ctx_);
         ctx_ = nullptr;
     }
+#endif
 }
 
 bool KinectSensor::init() {
+#ifndef HAVE_FREENECT
+    KFLOG_ERROR("Sensor", "Kinect support is unavailable in this build (libfreenect not found at configure time).");
+    return false;
+#else
     // After stop(), device/context stay open so the pipeline can start again (e.g. Reset scan).
     if (device_) return true;
 
@@ -61,9 +71,13 @@ bool KinectSensor::init() {
         freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_RGB));
 
     return true;
+#endif
 }
 
 bool KinectSensor::start() {
+#ifndef HAVE_FREENECT
+    return false;
+#else
     if (!device_) return false;
     if (running_.load()) return true;
 
@@ -73,9 +87,14 @@ bool KinectSensor::start() {
     running_.store(true);
     capture_thread_ = std::thread(&KinectSensor::captureLoop, this);
     return true;
+#endif
 }
 
 void KinectSensor::stop() {
+#ifndef HAVE_FREENECT
+    running_.store(false);
+    return;
+#else
     if (!running_.load()) return;
     running_.store(false);
 
@@ -86,9 +105,11 @@ void KinectSensor::stop() {
 
     if (capture_thread_.joinable())
         capture_thread_.join();
+#endif
 }
 
 void KinectSensor::captureLoop() {
+#ifdef HAVE_FREENECT
     while (running_.load()) {
         struct timeval timeout;
         timeout.tv_sec  = 0;
@@ -99,8 +120,10 @@ void KinectSensor::captureLoop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
+#endif
 }
 
+#ifdef HAVE_FREENECT
 void KinectSensor::depthCallback(freenect_device* dev, void* depth, uint32_t timestamp) {
     static_cast<KinectSensor*>(freenect_get_user(dev))->onDepth(depth, timestamp);
 }
@@ -108,9 +131,14 @@ void KinectSensor::depthCallback(freenect_device* dev, void* depth, uint32_t tim
 void KinectSensor::rgbCallback(freenect_device* dev, void* rgb, uint32_t timestamp) {
     static_cast<KinectSensor*>(freenect_get_user(dev))->onRgb(rgb, timestamp);
 }
+#else
+void KinectSensor::depthCallback(freenect_device*, void*, uint32_t) {}
+void KinectSensor::rgbCallback(freenect_device*, void*, uint32_t) {}
+#endif
 
 void KinectSensor::onDepth(void* data, uint32_t timestamp) {
     std::lock_guard<std::mutex> lk(sync_mutex_);
+    static int pair_log = 0;
     
     if (!depth_pending_) {
         depth_pending_ = acquireFreeFrame();

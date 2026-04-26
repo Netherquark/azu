@@ -16,9 +16,13 @@ namespace {
 constexpr int kClaheTileSize = 8;
 constexpr int kHoleFillRadius = 2;
 constexpr int kGuidedRadius = 9;
+constexpr int kRgbBilateralRadius = 2;
+constexpr int kDepthMedianRadius = 1;
 constexpr float kEmaJumpResetMeters = 0.05f;
 constexpr float kGuidedSigmaLuma = 0.10f;
 constexpr float kGuidedSigmaDepth = 0.04f;
+constexpr float kRgbSigmaSpatial = 2.0f;
+constexpr float kRgbSigmaRange = 28.0f;
 
 inline uint8_t clampToByte(float v) {
     return static_cast<uint8_t>(std::clamp(v, 0.0f, 255.0f));
@@ -68,17 +72,66 @@ void medianBlur3x3(std::vector<uint8_t>& rgb) {
     rgb.swap(scratch);
 }
 
+void bilateralDenoiseRgb(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst) {
+    #pragma omp parallel for schedule(static)
+    for (int y = 0; y < FRAME_H; ++y) {
+        for (int x = 0; x < FRAME_W; ++x) {
+            const int center_idx = (y * FRAME_W + x) * 3;
+            const float center_rgb[3] = {
+                static_cast<float>(src[center_idx + 0]),
+                static_cast<float>(src[center_idx + 1]),
+                static_cast<float>(src[center_idx + 2])
+            };
+
+            float accum[3] = {0.0f, 0.0f, 0.0f};
+            float weight_sum = 0.0f;
+
+            for (int dy = -kRgbBilateralRadius; dy <= kRgbBilateralRadius; ++dy) {
+                const int sy = std::clamp(y + dy, 0, FRAME_H - 1);
+                for (int dx = -kRgbBilateralRadius; dx <= kRgbBilateralRadius; ++dx) {
+                    const int sx = std::clamp(x + dx, 0, FRAME_W - 1);
+                    const int sample_idx = (sy * FRAME_W + sx) * 3;
+                    const float spatial_dist_sq = static_cast<float>(dx * dx + dy * dy);
+
+                    float color_dist_sq = 0.0f;
+                    for (int c = 0; c < 3; ++c) {
+                        const float delta = static_cast<float>(src[sample_idx + c]) - center_rgb[c];
+                        color_dist_sq += delta * delta;
+                    }
+
+                    const float spatial_weight = std::exp(-spatial_dist_sq / (2.0f * kRgbSigmaSpatial * kRgbSigmaSpatial));
+                    const float range_weight = std::exp(-color_dist_sq / (2.0f * kRgbSigmaRange * kRgbSigmaRange));
+                    const float weight = spatial_weight * range_weight;
+
+                    for (int c = 0; c < 3; ++c) {
+                        accum[c] += weight * static_cast<float>(src[sample_idx + c]);
+                    }
+                    weight_sum += weight;
+                }
+            }
+
+            for (int c = 0; c < 3; ++c) {
+                dst[center_idx + c] = (weight_sum > 1e-6f)
+                    ? clampToByte(accum[c] / weight_sum)
+                    : src[center_idx + c];
+            }
+        }
+    }
+}
+
 } // namespace
 
 SignalConditioner::SignalConditioner()
     : ema_buf_m_(FRAME_W * FRAME_H, 0.0f),
       sr_rgb_(FRAME_W * FRAME_H * 3, 0),
+      rgb_scratch_(FRAME_W * FRAME_H * 3, 0),
       guidance_luma_(FRAME_W * FRAME_H, 0.0f),
       depth_scratch_(FRAME_W * FRAME_H, 0) {}
 
 void SignalConditioner::reset() {
     resetEMA();
     std::fill(sr_rgb_.begin(), sr_rgb_.end(), 0);
+    std::fill(rgb_scratch_.begin(), rgb_scratch_.end(), 0);
     std::fill(guidance_luma_.begin(), guidance_luma_.end(), 0.0f);
     std::fill(depth_scratch_.begin(), depth_scratch_.end(), 0);
 }
@@ -106,12 +159,16 @@ void SignalConditioner::process(RawFrame& raw, cudaStream_t cuda_stream, float m
 void SignalConditioner::processCpu(RawFrame& raw, float min_depth_m, float max_depth_m) {
     preprocessRgb(raw.rgb);
     buildSuperResolutionGuidance(raw.rgb);
+    denoiseDepthSpatial(raw.depth, min_depth_m, max_depth_m);
     applyDepthEma(raw.depth, min_depth_m, max_depth_m);
     fillDepthHoles(raw.depth, min_depth_m, max_depth_m);
     guidedDepthFilter(raw.depth, min_depth_m, max_depth_m);
 }
 
 void SignalConditioner::preprocessRgb(std::vector<uint8_t>& rgb) {
+    bilateralDenoiseRgb(rgb, rgb_scratch_);
+    rgb.swap(rgb_scratch_);
+
     const int tiles_x = (FRAME_W + kClaheTileSize - 1) / kClaheTileSize;
     const int tiles_y = (FRAME_H + kClaheTileSize - 1) / kClaheTileSize;
 
@@ -186,6 +243,42 @@ void SignalConditioner::buildSuperResolutionGuidance(const std::vector<uint8_t>&
     for (int i = 0; i < FRAME_W * FRAME_H; ++i) {
         guidance_luma_[i] = rgbLuma(&sr_rgb_[i * 3]) / 255.0f;
     }
+}
+
+void SignalConditioner::denoiseDepthSpatial(std::vector<uint16_t>& depth, float min_depth_m, float max_depth_m) {
+    depth_scratch_ = depth;
+
+    #pragma omp parallel for schedule(static)
+    for (int y = 0; y < FRAME_H; ++y) {
+        for (int x = 0; x < FRAME_W; ++x) {
+            const int idx = y * FRAME_W + x;
+            const float center_depth_m = rawDepthToMeters(depth[idx]);
+            if (!isValidDepthMeters(center_depth_m, min_depth_m, max_depth_m)) {
+                continue;
+            }
+
+            float window[9];
+            int count = 0;
+            for (int dy = -kDepthMedianRadius; dy <= kDepthMedianRadius; ++dy) {
+                const int sy = std::clamp(y + dy, 0, FRAME_H - 1);
+                for (int dx = -kDepthMedianRadius; dx <= kDepthMedianRadius; ++dx) {
+                    const int sx = std::clamp(x + dx, 0, FRAME_W - 1);
+                    const float sample_depth_m = rawDepthToMeters(depth[sy * FRAME_W + sx]);
+                    if (!isValidDepthMeters(sample_depth_m, min_depth_m, max_depth_m)) {
+                        continue;
+                    }
+                    window[count++] = sample_depth_m;
+                }
+            }
+
+            if (count >= 3) {
+                std::nth_element(window, window + count / 2, window + count);
+                depth_scratch_[idx] = metersToRawDepth(window[count / 2]);
+            }
+        }
+    }
+
+    depth.swap(depth_scratch_);
 }
 
 void SignalConditioner::applyDepthEma(std::vector<uint16_t>& depth, float min_depth_m, float max_depth_m) {

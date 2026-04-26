@@ -6,6 +6,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include "sensor/Preprocessor.h"
 #include "gui/MainWindow.h"
 #include "utils/Logger.h"
 
@@ -50,9 +51,13 @@ int main(int argc, char* argv[]) {
     app.setPalette(dark);
 
     bool verbose_cli = false;
+    kfusion::sensor::PreprocessBackend preferred_backend = kfusion::sensor::PreprocessBackend::Auto;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--verbose") == 0 || std::strcmp(argv[i], "-v") == 0)
             verbose_cli = true;
+        if (std::strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+            preferred_backend = kfusion::sensor::parseBackendName(argv[++i]);
+        }
     }
     const char* env_log = std::getenv("KFUSION_LOG");
     std::string env_str = env_log ? env_log : "";
@@ -63,8 +68,9 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "KinectFusionQt v1.0 starting...\n";
+    std::cout << "Preprocess backend preference: " << kfusion::sensor::backendName(preferred_backend) << "\n";
 
-    kfusion::gui::MainWindow window;
+    kfusion::gui::MainWindow window(preferred_backend);
     window.show();
     const int exit_code = app.exec();
 
