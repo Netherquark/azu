@@ -83,6 +83,12 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
         delta(0,3) = tx; delta(1,3) = ty; delta(2,3) = tz;
 
         result.pose     = result.pose * delta;
+        
+        // Orthonormalize rotation to prevent drift/ghosting
+        Eigen::Matrix3f R_curr = result.pose.block<3,3>(0,0);
+        Eigen::JacobiSVD<Eigen::Matrix3f> svd(R_curr, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        result.pose.block<3,3>(0,0) = svd.matrixU() * svd.matrixV().transpose();
+
         result.error    = residual / static_cast<float>(std::max(inlier_count, 1));
         result.inliers  = inlier_count;
 
@@ -236,7 +242,7 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
 
             // Huber weight for robustness
             float abs_err = std::abs(err);
-            float huber_k = 0.05f; // Huber threshold in meters
+            float huber_k = 0.02f; // Reduced from 0.05m to fix ghosting/drift
             float w = (abs_err <= huber_k) ? 1.0f : huber_k / abs_err;
 
             acc.add(J, err * w);

@@ -72,15 +72,18 @@ const char* PreviewRenderer::MESH_VERT = R"glsl(
 #version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec3 aColor;
 uniform mat4 uMVP;
 uniform mat4 uModelView;
 uniform mat3 uNormalMatrix;
 out vec3 vNormal;
 out vec3 vFragPos;
+out vec3 vColor;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vFragPos = vec3(uModelView * vec4(aPos, 1.0));
     vNormal  = normalize(uNormalMatrix * aNormal);
+    vColor   = aColor;
 }
 )glsl";
 
@@ -88,6 +91,7 @@ const char* PreviewRenderer::MESH_FRAG = R"glsl(
 #version 330 core
 in vec3 vNormal;
 in vec3 vFragPos;
+in vec3 vColor;
 out vec4 FragColor;
 void main() {
     vec3 lightDir = normalize(vec3(1.0, 2.0, 3.0));
@@ -96,8 +100,7 @@ void main() {
     vec3 diffuse = vec3(0.6) * diff;
     float spec_k = pow(max(dot(normalize(-vFragPos), reflect(-lightDir, vNormal)), 0.0), 32.0);
     vec3 specular = vec3(0.2) * spec_k;
-    vec3 color = vec3(0.72, 0.78, 0.85);
-    FragColor = vec4((ambient + diffuse + specular) * color, 1.0);
+    FragColor = vec4((ambient + diffuse + specular) * vColor, 1.0);
 }
 )glsl";
 
@@ -176,6 +179,7 @@ void PreviewRenderer::initMeshBuffers() {
     glGenVertexArrays(1, &mesh_vao_);
     glGenBuffers(1, &mesh_vbo_pos_);
     glGenBuffers(1, &mesh_vbo_norm_);
+    glGenBuffers(1, &mesh_vbo_col_);
     glGenBuffers(1, &mesh_ebo_);
 
     glBindVertexArray(mesh_vao_);
@@ -187,6 +191,10 @@ void PreviewRenderer::initMeshBuffers() {
     glBindBuffer(GL_ARRAY_BUFFER, mesh_vbo_norm_);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
     glEnableVertexAttribArray(1);
+
+    glBindBuffer(GL_ARRAY_BUFFER, mesh_vbo_col_);
+    glVertexAttribPointer(2, 3, GL_UNSIGNED_BYTE, GL_TRUE, 0, nullptr);
+    glEnableVertexAttribArray(2);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh_ebo_);
 
@@ -203,7 +211,10 @@ void PreviewRenderer::uploadPointCloud(const sensor::FrameData& frame) {
     int count = 0;
 
     for (int i = 0; i < N; ++i) {
-        if (frame.depth_meters[i] <= 0.0f) continue;
+        // Handle both live frames (depth check) and raycasted model frames (z check)
+        bool valid = (frame.depth_meters.size() > i) ? (frame.depth_meters[i] > 0.0f) : (frame.vertices[i].z() > 0.0f);
+        if (!valid) continue;
+
         const auto& v = frame.vertices[i];
         positions.push_back(v.x());
         positions.push_back(v.y());
@@ -247,6 +258,14 @@ void PreviewRenderer::uploadMesh(const meshing::MeshData& mesh) {
     glBufferData(GL_ARRAY_BUFFER,
                  mesh.normals.size() * sizeof(Eigen::Vector3f),
                  mesh.normals.data(), GL_DYNAMIC_DRAW);
+
+    // Colors
+    if (!mesh.colors.empty()) {
+        glBindBuffer(GL_ARRAY_BUFFER, mesh_vbo_col_);
+        glBufferData(GL_ARRAY_BUFFER,
+                     mesh.colors.size(),
+                     mesh.colors.data(), GL_DYNAMIC_DRAW);
+    }
 
     // Indices
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh_ebo_);

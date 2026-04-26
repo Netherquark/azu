@@ -36,10 +36,12 @@ struct ICPResult {
 struct ModelFrame {
     std::vector<Eigen::Vector3f> vertices;
     std::vector<Eigen::Vector3f> normals;
+    std::vector<uint8_t>         colors;
     
 #ifdef CUDA_ENABLED
     utils::CudaUniquePtr<float3> d_vertices;
     utils::CudaUniquePtr<float3> d_normals;
+    utils::CudaUniquePtr<uchar3> d_colors;
 #endif
 
     int width  = sensor::FRAME_W;
@@ -48,6 +50,7 @@ struct ModelFrame {
     ModelFrame() {
         vertices.assign(width * height, Eigen::Vector3f::Zero());
         normals.assign(width * height, Eigen::Vector3f::Zero());
+        colors.assign(width * height * 3, 0);
     }
     
     // Use default destructor as CudaUniquePtr handles cleanup

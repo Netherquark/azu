@@ -13,6 +13,7 @@
 #include <QFrame>
 #include <QScrollArea>
 #include <QSlider>
+#include "gui/NavigationGizmo.h"
 
 namespace kfusion {
 namespace gui {
@@ -83,29 +84,11 @@ void ControlPanel::setupUI() {
     inner_layout->addWidget(grp_mode);
 
     // 3. Camera Controls
-    auto* grp_cam = new QGroupBox("Camera Controls (XYZ Rotation)", inner);
+    auto* grp_cam = new QGroupBox("Camera Navigator", inner);
     auto* h_cam = new QVBoxLayout(grp_cam);
     
-    auto* h_x = new QHBoxLayout();
-    h_x->addWidget(new QLabel("Pitch (X)"));
-    slider_x_ = new QSlider(Qt::Horizontal, grp_cam);
-    slider_x_->setRange(-180, 180);
-    h_x->addWidget(slider_x_);
-    h_cam->addLayout(h_x);
-
-    auto* h_y = new QHBoxLayout();
-    h_y->addWidget(new QLabel("Yaw (Y)"));
-    slider_y_ = new QSlider(Qt::Horizontal, grp_cam);
-    slider_y_->setRange(-180, 180);
-    h_y->addWidget(slider_y_);
-    h_cam->addLayout(h_y);
-
-    auto* h_z = new QHBoxLayout();
-    h_z->addWidget(new QLabel("Roll (Z)"));
-    slider_z_ = new QSlider(Qt::Horizontal, grp_cam);
-    slider_z_->setRange(-180, 180);
-    h_z->addWidget(slider_z_);
-    h_cam->addLayout(h_z);
+    nav_gizmo_ = new NavigationGizmo(grp_cam);
+    h_cam->addWidget(nav_gizmo_, 0, Qt::AlignCenter);
     
     inner_layout->addWidget(grp_cam);
 
@@ -251,12 +234,7 @@ void ControlPanel::connectSignals() {
         btn_toggle_hp_->setText(checked ? "⚙  Hide Advanced Configuration" : "⚙  Show Advanced Configuration");
     });
 
-    auto emitCameraRotation = [this]() {
-        emit cameraRotationChanged(slider_x_->value(), slider_y_->value(), slider_z_->value());
-    };
-    connect(slider_x_, &QSlider::valueChanged, this, emitCameraRotation);
-    connect(slider_y_, &QSlider::valueChanged, this, emitCameraRotation);
-    connect(slider_z_, &QSlider::valueChanged, this, emitCameraRotation);
+    connect(nav_gizmo_, &NavigationGizmo::cameraRotationChanged, this, &ControlPanel::cameraRotationChanged);
 }
 
 app::FusionHyperparams ControlPanel::hyperparamsFromUi() const {
@@ -321,22 +299,16 @@ void ControlPanel::setExportEnabled(bool enabled) {
 
 void ControlPanel::setCameraRotation(int pitch, int yaw, int roll) {
     // Block signals to avoid infinite loop between mouse updates and slider updates
-    slider_x_->blockSignals(true);
-    slider_y_->blockSignals(true);
-    slider_z_->blockSignals(true);
+    nav_gizmo_->blockSignals(true);
 
     // Normalize values to -180..180
     pitch = (pitch % 360 + 360) % 360; if (pitch > 180) pitch -= 360;
     yaw   = (yaw % 360 + 360) % 360;   if (yaw > 180) yaw -= 360;
     roll  = (roll % 360 + 360) % 360;  if (roll > 180) roll -= 360;
 
-    slider_x_->setValue(pitch);
-    slider_y_->setValue(yaw);
-    slider_z_->setValue(roll);
+    nav_gizmo_->setCameraRotation(pitch, yaw, roll);
 
-    slider_x_->blockSignals(false);
-    slider_y_->blockSignals(false);
-    slider_z_->blockSignals(false);
+    nav_gizmo_->blockSignals(false);
 }
 
 void ControlPanel::onPresetChanged(int index) {

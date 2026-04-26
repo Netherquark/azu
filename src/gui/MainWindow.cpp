@@ -100,8 +100,6 @@ void MainWindow::connectSignals() {
     });
 
     pipeline_->setFrameReadyCallback([this](const sensor::FrameData& frame) {
-        // Must call on UI thread — use invokeMethod
-        // Copy frame (safe because FrameData is value type)
         auto frame_copy = std::make_shared<sensor::FrameData>(frame);
         QMetaObject::invokeMethod(this, [this, frame_copy]() {
             onFrameReady(*frame_copy);
@@ -202,7 +200,6 @@ void MainWindow::onModeChanged(int index) {
 }
 
 void MainWindow::onFrameReady(const sensor::FrameData& frame) {
-    // Always refresh GPU point cloud so "Mesh" preview can fall back until a mesh exists.
     if (gl_widget_) gl_widget_->updatePointCloud(frame);
 }
 

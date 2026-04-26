@@ -55,3 +55,6 @@ The following critiques from the initial implementation have been addressed to e
 5. **Axis Panning Constraints:**
    - **Update:** **RESOLVED**. The 'Z' key now correctly translates the camera along the world Z-axis during panning, rather than incorrectly hijacking the 'zoom' (distance) parameter.
 
+6. **Build System Regression (NavigationGizmo):**
+   - **Update:** **RESOLVED**. The build system was modernized to use `CMAKE_AUTOMOC` and explicit header tracking. This ensures that the `NavigationGizmo` and other Qt-dependent components are always correctly compiled and linked, even after complex repository updates or `git pull` operations.
+
