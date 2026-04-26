@@ -7,14 +7,17 @@
 #include "utils/CudaUniquePtr.h"
 #endif
 
+#ifdef CUDA_ENABLED
+#include <cuda_runtime_api.h>
+#endif
+
 namespace kfusion {
 namespace sensor {
 
 struct RawFrame;
 
 #ifdef CUDA_ENABLED
-struct CUstream_st;
-using cudaStream_t = CUstream_st*;
+using cudaStream_t = ::cudaStream_t;
 #else
 using cudaStream_t = void*;
 #endif

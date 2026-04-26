@@ -5,6 +5,7 @@
 #include <device_launch_parameters.h>
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
+#include <thrust/reduce.h>
 #include <iostream>
 #include <cstring>
 #include "tsdf/VoxelGPU.h"
@@ -90,9 +91,9 @@ __global__ void integrationKernel_PixelParallel(
         float wy = tcw_y + ry_w * t;
         float wz = tcw_z + rz_w * t;
 
-        int vx = (int)((wx - origin.x) / voxel_size);
-        int vy = (int)((wy - origin.y) / voxel_size);
-        int vz = (int)((wz - origin.z) / voxel_size);
+        int vx = __float2int_rd((wx - origin.x) / voxel_size);
+        int vy = __float2int_rd((wy - origin.y) / voxel_size);
+        int vz = __float2int_rd((wz - origin.z) / voxel_size);
 
         if (vx < 0 || vx >= resolution || vy < 0 || vy >= resolution || vz < 0 || vz >= resolution)
             continue;
@@ -108,7 +109,7 @@ __global__ void integrationKernel_PixelParallel(
         // Simultaneous 64-bit atomic update for weight and TSDF
         unsigned long long* addr_tsdf_weight = (unsigned long long*)&vox.tsdf;
         unsigned long long assumed_tw, old_tw = *addr_tsdf_weight;
-        float w_new;
+        float w_new, w_old;
         do {
             assumed_tw = old_tw;
             
@@ -116,14 +117,14 @@ __global__ void integrationKernel_PixelParallel(
             unsigned int t_old_int = (unsigned int)(assumed_tw & 0xFFFFFFFF);
             unsigned int w_old_int = (unsigned int)(assumed_tw >> 32);
             
-            float t_old = __int_as_float(t_old_int);
-            float w_old = __int_as_float(w_old_int);
+            float t_old = __uint_as_float(t_old_int);
+            w_old = __uint_as_float(w_old_int);
             
             w_new = fminf(w_old + 1.0f, max_weight);
             float t_new = (t_old * w_old + tsdf_new) / (w_old + 1.0f);
             
-            unsigned int t_new_int = __float_as_int(t_new);
-            unsigned int w_new_int = __float_as_int(w_new);
+            unsigned int t_new_int = __float_as_uint(t_new);
+            unsigned int w_new_int = __float_as_uint(w_new);
             
             unsigned long long new_tw = ((unsigned long long)w_new_int << 32) | (unsigned long long)t_new_int;
             
@@ -137,13 +138,13 @@ __global__ void integrationKernel_PixelParallel(
             float b_meas = (float)rgb[pidx*3+2];
             
             auto atomicUpdateColor = [&](float* c_addr, float m) {
-                int* c_addr_i = (int*)c_addr;
-                int c_old_val = *c_addr_i, c_assumed, c_new_val;
+                unsigned int* c_addr_i = (unsigned int*)c_addr;
+                unsigned int c_old_val = *c_addr_i, c_assumed, c_new_val;
                 do {
                     c_assumed = c_old_val;
-                    float c_old = __int_as_float(c_assumed);
+                    float c_old = __uint_as_float(c_assumed);
                     float c_new = (c_old * w_old + m) / (w_old + 1.0f);
-                    c_new_val = __float_as_int(c_new);
+                    c_new_val = __float_as_uint(c_new);
                     c_old_val = atomicCAS(c_addr_i, c_assumed, c_new_val);
                 } while (c_assumed != c_old_val);
             };
@@ -253,46 +254,66 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
-__device__ float3 computeNormalGPU(void* voxels_void, int resolution, int x, int y, int z) {
-    VoxelGPU* voxels = (VoxelGPU*)voxels_void;
+__device__ float get_tsdf_trilinear(VoxelGPU* voxels, int resolution, float voxel_size, float3 origin, float3 p) {
+    float3 v = make_float3((p.x - origin.x) / voxel_size, (p.y - origin.y) / voxel_size, (p.z - origin.z) / voxel_size);
+    
+    int x0 = __float2int_rd(v.x);
+    int y0 = __float2int_rd(v.y);
+    int z0 = __float2int_rd(v.z);
 
-    auto get_tsdf_and_valid = [&](int xi, int yi, int zi, float& tsdf_val, bool& valid) {
-        if (xi < 0 || xi >= resolution || yi < 0 || yi >= resolution || zi < 0 || zi >= resolution) {
-            valid = false;
-            tsdf_val = 1.0f;
-            return;
+    if (x0 < 0 || x0 >= resolution - 1 || y0 < 0 || y0 >= resolution - 1 || z0 < 0 || z0 >= resolution - 1) {
+        if (x0 >= 0 && x0 < resolution && y0 >= 0 && y0 < resolution && z0 >= 0 && z0 < resolution) {
+            VoxelGPU& vox = voxels[z0 * resolution * resolution + y0 * resolution + x0];
+            return (vox.weight > 0.0f) ? vox.tsdf : 1.0f;
         }
-        VoxelGPU& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        if (v.weight <= 0.001f) {
-            valid = false;
-            tsdf_val = 1.0f;
-        } else {
-            valid = true;
-            tsdf_val = v.tsdf;
-        }
+        return 1.0f;
+    }
+
+    float tx = v.x - x0;
+    float ty = v.y - y0;
+    float tz = v.z - z0;
+
+    auto getV = [&](int x, int y, int z) {
+        VoxelGPU& vox = voxels[z * resolution * resolution + y * resolution + x];
+        return (vox.weight > 0.0f) ? vox.tsdf : 1.0f;
     };
 
-    float tsdf_x_p, tsdf_x_n, tsdf_y_p, tsdf_y_n, tsdf_z_p, tsdf_z_n, tsdf_c;
-    bool v_x_p, v_x_n, v_y_p, v_y_n, v_z_p, v_z_n, v_c;
-    
-    get_tsdf_and_valid(x, y, z, tsdf_c, v_c);
-    get_tsdf_and_valid(x + 1, y, z, tsdf_x_p, v_x_p);
-    get_tsdf_and_valid(x - 1, y, z, tsdf_x_n, v_x_n);
-    get_tsdf_and_valid(x, y + 1, z, tsdf_y_p, v_y_p);
-    get_tsdf_and_valid(x, y - 1, z, tsdf_y_n, v_y_n);
-    get_tsdf_and_valid(x, y, z + 1, tsdf_z_p, v_z_p);
-    get_tsdf_and_valid(x, y, z - 1, tsdf_z_n, v_z_n);
+    float v000 = getV(x0, y0, z0);
+    float v100 = getV(x0+1, y0, z0);
+    float v010 = getV(x0, y0+1, z0);
+    float v110 = getV(x0+1, y0+1, z0);
+    float v001 = getV(x0, y0, z0+1);
+    float v101 = getV(x0+1, y0, z0+1);
+    float v011 = getV(x0, y0+1, z0+1);
+    float v111 = getV(x0+1, y0+1, z0+1);
+
+    float v00 = v000 * (1 - tx) + v100 * tx;
+    float v01 = v001 * (1 - tx) + v101 * tx;
+    float v10 = v010 * (1 - tx) + v110 * tx;
+    float v11 = v011 * (1 - tx) + v111 * tx;
+
+    float v0 = v00 * (1 - ty) + v10 * ty;
+    float v1 = v01 * (1 - ty) + v11 * ty;
+
+    return v0 * (1 - tz) + v1 * tz;
+}
+
+__device__ float3 computeNormalGPU(void* voxels_void, int resolution, float voxel_size, float3 origin, float3 p) {
+    VoxelGPU* voxels = (VoxelGPU*)voxels_void;
 
     float3 n;
-    n.x = (v_x_p && v_x_n) ? (tsdf_x_p - tsdf_x_n) : (v_x_p ? (tsdf_x_p - tsdf_c) : (v_x_n ? (tsdf_c - tsdf_x_n) : 0.0f));
-    n.y = (v_y_p && v_y_n) ? (tsdf_y_p - tsdf_y_n) : (v_y_p ? (tsdf_y_p - tsdf_c) : (v_y_n ? (tsdf_c - tsdf_y_n) : 0.0f));
-    n.z = (v_z_p && v_z_n) ? (tsdf_z_p - tsdf_z_n) : (v_z_p ? (tsdf_z_p - tsdf_c) : (v_z_n ? (tsdf_c - tsdf_z_n) : 0.0f));
+    n.x = get_tsdf_trilinear(voxels, resolution, voxel_size, origin, make_float3(p.x + voxel_size, p.y, p.z)) -
+          get_tsdf_trilinear(voxels, resolution, voxel_size, origin, make_float3(p.x - voxel_size, p.y, p.z));
+    n.y = get_tsdf_trilinear(voxels, resolution, voxel_size, origin, make_float3(p.x, p.y + voxel_size, p.z)) -
+          get_tsdf_trilinear(voxels, resolution, voxel_size, origin, make_float3(p.x, p.y - voxel_size, p.z));
+    n.z = get_tsdf_trilinear(voxels, resolution, voxel_size, origin, make_float3(p.x, p.y, p.z + voxel_size)) -
+          get_tsdf_trilinear(voxels, resolution, voxel_size, origin, make_float3(p.x, p.y, p.z - voxel_size));
 
     float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
     if (len > 1e-6f) {
         n.x /= len; n.y /= len; n.z /= len;
     } else {
-        n = make_float3(0, 0, -1);
+        n = make_float3(0, 0, 0);
     }
     return n;
 }
@@ -313,10 +334,7 @@ __global__ void raycastKernel(
 
     VoxelGPU* voxels = (VoxelGPU*)voxels_void;
 
-    auto get_tsdf = [&](int xi, int yi, int zi) {
-        VoxelGPU& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        return (v.weight <= 0.001f) ? 1.0f : v.tsdf;
-    };
+
 
     // Ray in camera space
     float3 ray_c = make_float3((px - cx) / fx, (py - cy) / fy, 1.0f);
@@ -330,53 +348,43 @@ __global__ void raycastKernel(
     ray_w.z = r20 * ray_c.x + r21 * ray_c.y + r22 * ray_c.z;
 
     float3 pos_w = make_float3(tx, ty, tz);
-    float t = 0.4f; // min depth
-    float prev_val = 1.0f;
-    bool inside_surface = false;
+    float t = 0.3f; // min depth for Kinect v1
+    float prev_tsdf = 1.0f;
 
-    for (int i = 0; i < 400; ++i) { // max steps
+    while (t < 5.0f) {
         float3 p = make_float3(pos_w.x + ray_w.x * t, pos_w.y + ray_w.y * t, pos_w.z + ray_w.z * t);
-        int vx = (int)((p.x - origin.x) / voxel_size);
-        int vy = (int)((p.y - origin.y) / voxel_size);
-        int vz = (int)((p.z - origin.z) / voxel_size);
+        float tsdf = get_tsdf_trilinear(voxels, resolution, voxel_size, origin, p);
 
-        if (vx < 0 || vx >= resolution || vy < 0 || vy >= resolution || vz < 0 || vz >= resolution) {
-            t += voxel_size;
-            continue;
-        }
+        if (tsdf < 1.0f) { // Probable geometry region
+            if (prev_tsdf > 0.0f && tsdf <= 0.0f) {
+                // Surface zero-crossing found
+                float t_hit = t - voxel_size * tsdf / (tsdf - prev_tsdf - 1e-6f);
+                float3 pf = make_float3(pos_w.x + ray_w.x * t_hit, pos_w.y + ray_w.y * t_hit, pos_w.z + ray_w.z * t_hit);
 
-        float val = get_tsdf(vx, vy, vz);
-        
-        if (i == 0 && val < 0) {
-            inside_surface = true;
-        }
-        if (inside_surface && val > 0) {
-            inside_surface = false;
-            prev_val = val;
-        }
+                
+                out_v[py * width + px] = pf;
+                out_n[py * width + px] = computeNormalGPU(voxels_void, resolution, voxel_size, origin, pf);
 
-        if (!inside_surface && prev_val > 0 && val < 0) {
-            // Surface found
-            float t_fine = t - voxel_size * (val / (val - prev_val));
-            float3 pf = make_float3(pos_w.x + ray_w.x * t_fine, pos_w.y + ray_w.y * t_fine, pos_w.z + ray_w.z * t_fine);
-            
-            // Output WORLD SPACE vertex (consistent with CPU)
-            out_v[py * width + px] = pf;
-            
-            // Compute normal in world space
-            float3 n_w = computeNormalGPU(voxels_void, resolution, vx, vy, vz);
-            out_n[py * width + px] = n_w;
-
-            if (out_c) {
-                VoxelGPU& v = voxels[vz * resolution * resolution + vy * resolution + vx];
-                out_c[py * width + px] = make_uchar3((uint8_t)v.r, (uint8_t)v.g, (uint8_t)v.b);
+                if (out_c) {
+                    int vx = __float2int_rd((pf.x - origin.x) / voxel_size);
+                    int vy = __float2int_rd((pf.y - origin.y) / voxel_size);
+                    int vz = __float2int_rd((pf.z - origin.z) / voxel_size);
+                    if (vx >= 0 && vx < resolution && vy >= 0 && vy < resolution && vz >= 0 && vz < resolution) {
+                        VoxelGPU& v = voxels[vz * resolution * resolution + vy * resolution + vx];
+                        out_c[py * width + px] = make_uchar3((uint8_t)v.r, (uint8_t)v.g, (uint8_t)v.b);
+                    }
+                }
+                return;
             }
-            return;
+            prev_tsdf = tsdf;
+            t += voxel_size * 0.5f; // Small steps near surface
+        } else {
+            // Unknown or empty space
+            t += voxel_size; 
+            prev_tsdf = 1.0f;
         }
-        prev_val = val;
-        t += fmaxf(voxel_size, fabsf(val) * 0.1f); // skipping
-        if (t > 5.0f) break;
     }
+    
     out_v[py * width + px] = make_float3(0,0,0);
     out_n[py * width + px] = make_float3(0,0,0);
     if (out_c) out_c[py * width + px] = make_uchar3(0,0,0);

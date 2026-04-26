@@ -6,6 +6,17 @@
 #include <device_launch_parameters.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+
+#ifndef CUDA_CHECK_LAST
+#define CUDA_CHECK_LAST() \
+    do { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        } \
+    } while(0)
+#endif
 
 namespace kfusion {
 namespace sensor {
@@ -176,7 +187,7 @@ __global__ void denoiseDepthSpatialKernel(const uint16_t* src, uint16_t* dst, in
     int idx = y * w + x;
     float center_d = rawDepthToMetersGPU(src[idx]);
     if (center_d < min_d || center_d > max_d) {
-        dst[idx] = 0;
+        dst[idx] = src[idx];
         return;
     }
 
@@ -235,7 +246,7 @@ __global__ void fillDepthHolesKernel(const uint16_t* src, uint16_t* dst, int w, 
     if (x >= w || y >= h) return;
 
     int idx = y * w + x;
-    if (src[idx] != 0) {
+    if (src[idx] != 0 && src[idx] != 2047) {
         dst[idx] = src[idx];
         return;
     }
@@ -323,8 +334,8 @@ bool SignalConditioner::processCuda(RawFrame& raw,
                                     cudaStream_t stream,
                                     float min_depth_m,
                                     float max_depth_m) {
-    int w = FRAME_W;
-    int h = FRAME_H;
+    int w = RGB_WIDTH;
+    int h = RGB_HEIGHT;
     size_t n = w * h;
 
     // Allocate resources on first use
@@ -347,29 +358,37 @@ bool SignalConditioner::processCuda(RawFrame& raw,
 
     // 1. Preprocess RGB: Bilateral + Median
     bilateralDenoiseRgbKernel<<<grid, block, 0, stream>>>(d_rgb_in_.get(), d_rgb_out_.get(), w, h);
+    CUDA_CHECK_LAST();
     medianBlur3x3Kernel<<<grid, block, 0, stream>>>(d_rgb_out_.get(), d_rgb_in_.get(), w, h);
+    CUDA_CHECK_LAST();
 
     // 2. Super Resolution Guidance (CAS)
     float sharpness = 0.85f;
     float t = std::max(0.0f, std::min(sharpness, 1.0f));
     float peak = -1.0f / ((1.0f - t) * 8.0f + t * 5.0f);
     applyCASKernel<<<grid, block, 0, stream>>>(d_rgb_in_.get(), d_rgb_out_.get(), w, h, peak);
+    CUDA_CHECK_LAST();
     
     // Compute Luma for guided filter
     computeLumaKernel<<<grid, block, 0, stream>>>(d_rgb_out_.get(), d_guidance_luma_.get(), w, h);
+    CUDA_CHECK_LAST();
 
     // 3. Depth pipeline
     denoiseDepthSpatialKernel<<<grid, block, 0, stream>>>(d_depth_in_.get(), d_depth_out_.get(), w, h, min_depth_m, max_depth_m);
+    CUDA_CHECK_LAST();
     
     int total_threads = n;
     int block_size = 256;
     int grid_size = (total_threads + block_size - 1) / block_size;
     applyDepthEmaKernel<<<grid_size, block_size, 0, stream>>>(d_depth_out_.get(), d_ema_buf_m_.get(), w, h, min_depth_m, max_depth_m);
+    CUDA_CHECK_LAST();
 
     fillDepthHolesKernel<<<grid, block, 0, stream>>>(d_depth_out_.get(), d_depth_in_.get(), w, h, min_depth_m, max_depth_m);
+    CUDA_CHECK_LAST();
     
     // 4. Guided Depth Filter
     guidedDepthFilterKernel<<<grid, block, 0, stream>>>(d_depth_in_.get(), d_depth_out_.get(), d_guidance_luma_.get(), w, h, min_depth_m, max_depth_m);
+    CUDA_CHECK_LAST();
 
     // Download
     cudaMemcpyAsync(raw.rgb.data(), d_rgb_out_.get(), n * 3, cudaMemcpyDeviceToHost, stream);

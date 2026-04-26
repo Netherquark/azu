@@ -64,6 +64,10 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
         A += Eigen::Matrix<float, 6, 6>::Identity() * 0.1f;
         Eigen::Matrix<float, 6, 1> x = A.ldlt().solve(b);
 
+        if (!x.allFinite() || x.head<3>().norm() > 0.2f) {
+            break;
+        }
+
         float tx = x(0), ty = x(1), tz = x(2);
         float rx = x(3), ry = x(4), rz = x(5);
 
@@ -296,17 +300,16 @@ ICPResult ICPTracker::trackGPU(const sensor::FramePyramid& live,
         cudaMemcpy(d_pyramid_n[level].get(), ld.normals.data(),  sz, cudaMemcpyHostToDevice);
     }
 
+    bool converged = false;
     for (int level = sensor::FramePyramid::LEVELS - 1; level >= 0; --level) {
         result = trackLevelGPU(
             d_pyramid_v[level].get(), d_pyramid_n[level].get(),
             live.levels[level].width, live.levels[level].height,
             model, result.pose, ref_pose, level, params_.max_iterations[level]
         );
-        if (result.inliers < 100) {
-            result.tracking_ok = false;
-            break;
-        }
+        converged = result.converged;
     }
+    result.tracking_ok = converged && result.inliers > 100;
     return result;
 }
 #endif
