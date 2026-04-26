@@ -64,6 +64,35 @@ void suppressBackgroundShadowPixels(FrameData& frame) {
     }
 }
 
+void medianFilter3x3(FrameData& frame) {
+    const int W = frame.width;
+    const int H = frame.height;
+    std::vector<float> filtered = frame.depth_meters;
+
+    #pragma omp parallel for schedule(static)
+    for (int y = 1; y < H - 1; ++y) {
+        for (int x = 1; x < W - 1; ++x) {
+            int idx = y * W + x;
+            if (frame.depth_meters[idx] <= 0.0f) continue;
+
+            float window[9];
+            int count = 0;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    float d = frame.depth_meters[(y + dy) * W + (x + dx)];
+                    if (d > 0.0f) window[count++] = d;
+                }
+            }
+
+            if (count >= 5) { // Need a majority to be valid
+                std::sort(window, window + count);
+                filtered[idx] = window[count / 2];
+            }
+        }
+    }
+    frame.depth_meters = std::move(filtered);
+}
+
 } // namespace
 
 void buildFrameData(const uint16_t* raw_depth,
@@ -101,6 +130,7 @@ void buildFrameData(const uint16_t* raw_depth,
     }
 
     suppressBackgroundShadowPixels(out);
+    medianFilter3x3(out);
     computeNormals(out);
 }
 
