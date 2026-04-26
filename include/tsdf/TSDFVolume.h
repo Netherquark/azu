@@ -101,6 +101,9 @@ public:
                     float3* d_vertices, float3* d_normals,
                     uchar3* d_colors = nullptr);
 
+    void extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points_out,
+                                    std::vector<uint8_t>&         colors_out) const;
+
     void* getGPUVoxels() const { return (void*)d_voxels_.get(); }
 #endif
 

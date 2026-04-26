@@ -119,15 +119,21 @@ __global__ void computeHessianKernel(
                                 J[4] = v_live.z * n_model_live.x - v_live.x * n_model_live.z;
                                 J[5] = v_live.x * n_model_live.y - v_live.y * n_model_live.x;
 
+                                // Huber weight for robustness (matches CPU reference)
+                                float abs_err = fabsf(err);
+                                float huber_k = 0.02f; 
+                                float w = (abs_err <= huber_k) ? 1.0f : huber_k / abs_err;
+                                float weighted_err = err * w;
+
                                 // Accumulate A = J*J^T (upper triangle)
                                 int count = 0;
                                 for (int i = 0; i < 6; ++i) {
                                     for (int j = i; j < 6; ++j) {
                                         local_A[count++] += J[i] * J[j];
                                     }
-                                    local_b[i] -= J[i] * err;
+                                    local_b[i] -= J[i] * weighted_err;
                                 }
-                                local_res += err * err;
+                                local_res += weighted_err * weighted_err;
                                 local_inliers++;
                             } else {
                                 local_angle_filtered++;

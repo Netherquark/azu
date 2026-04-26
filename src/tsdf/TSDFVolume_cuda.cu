@@ -3,6 +3,8 @@
 #include "tsdf/TSDFVolume.h"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+#include <thrust/device_ptr.h>
+#include <thrust/scan.h>
 #include <iostream>
 #include <cstring>
 #include "tsdf/VoxelGPU.h"
@@ -61,6 +63,10 @@ __global__ void integrationKernel_PixelParallel(
     float t_max = d_meas + truncation;
     float step  = voxel_size * 0.75f;
 
+    // Hoist the Z-projection scale to avoid matrix-vector dot in the loop
+    // cz_ = t * (ray_direction_in_camera_space.z) = t / ray_dist_scale
+    float z_scale = 1.0f / ray_dist_scale;
+
     for (float t = t_min; t <= t_max; t += step) {
         float wx = tcw_x + rx_w * t;
         float wy = tcw_y + ry_w * t;
@@ -73,7 +79,7 @@ __global__ void integrationKernel_PixelParallel(
         if (vx < 0 || vx >= resolution || vy < 0 || vy >= resolution || vz < 0 || vz >= resolution)
             continue;
 
-        float cz_ = rwc20*wx + rwc21*wy + rwc22*wz + twc_z;
+        float cz_ = t * z_scale;
         float sdf = d_meas - cz_;
         if (sdf < -truncation) continue;
 
@@ -336,6 +342,117 @@ void TSDFVolume::raycastGPU(const Eigen::Matrix4f& pose,
         width, height, d_vertices, d_normals, d_colors
     );
     cudaDeviceSynchronize();
+}
+
+// -------------------------------------------------------------------
+// Global Point Cloud Extraction (GPU-accelerated)
+// -------------------------------------------------------------------
+
+__global__ void classifyVoxelKernel(
+    const VoxelGPU* voxels,
+    int             resolution,
+    uint32_t*       is_valid)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (x >= resolution || y >= resolution || z >= resolution) return;
+
+    int idx = z * resolution * resolution + y * resolution + x;
+    const VoxelGPU& v = voxels[idx];
+
+    // Same criteria as CPU extractGlobalPointCloud: weight > 1.0 and surface proximity
+    if (v.weight > 1.0f && fabsf(v.tsdf) < 0.2f) {
+        is_valid[idx] = 1;
+    } else {
+        is_valid[idx] = 0;
+    }
+}
+
+__global__ void compactPointsKernel(
+    const VoxelGPU* voxels,
+    const uint32_t* is_valid,
+    const uint32_t* offsets,
+    int             resolution,
+    float           voxel_size,
+    float3          origin,
+    float3*         out_points,
+    uchar3*         out_colors)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (x >= resolution || y >= resolution || z >= resolution) return;
+
+    int idx = z * resolution * resolution + y * resolution + x;
+    if (is_valid[idx]) {
+        uint32_t out_idx = offsets[idx];
+        out_points[out_idx] = make_float3(
+            origin.x + x * voxel_size,
+            origin.y + y * voxel_size,
+            origin.z + z * voxel_size
+        );
+        const VoxelGPU& v = voxels[idx];
+        out_colors[out_idx] = make_uchar3(
+            (uint8_t)fmaxf(0, fminf(255, v.r)),
+            (uint8_t)fmaxf(0, fminf(255, v.g)),
+            (uint8_t)fmaxf(0, fminf(255, v.b))
+        );
+    }
+}
+
+void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points_out,
+                                            std::vector<uint8_t>&         colors_out) const
+{
+    int res = params_.resolution;
+    int total_voxels = res * res * res;
+
+    utils::CudaUniquePtr<uint32_t> d_is_valid = utils::make_cuda_unique<uint32_t>(total_voxels);
+    utils::CudaUniquePtr<uint32_t> d_offsets = utils::make_cuda_unique<uint32_t>(total_voxels);
+
+    dim3 block(8, 8, 8);
+    dim3 grid((res + block.x - 1) / block.x, (res + block.y - 1) / block.y, (res + block.z - 1) / block.z);
+
+    classifyVoxelKernel<<<grid, block>>>(d_voxels_.get(), res, d_is_valid.get());
+
+    // Use Thrust for exclusive scan to get compaction offsets
+    thrust::device_ptr<uint32_t> d_ptr_valid(d_is_valid.get());
+    thrust::device_ptr<uint32_t> d_ptr_offsets(d_offsets.get());
+    thrust::exclusive_scan(d_ptr_valid, d_ptr_valid + total_voxels, d_ptr_offsets);
+
+    uint32_t total_points = 0;
+    uint32_t last_valid, last_offset;
+    cudaMemcpy(&last_valid, d_is_valid.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&last_offset, d_offsets.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    total_points = last_offset + last_valid;
+
+    if (total_points == 0) return;
+
+    utils::CudaUniquePtr<float3> d_out_points = utils::make_cuda_unique<float3>(total_points);
+    utils::CudaUniquePtr<uchar3> d_out_colors = utils::make_cuda_unique<uchar3>(total_points);
+
+    compactPointsKernel<<<grid, block>>>(
+        d_voxels_.get(), d_is_valid.get(), d_offsets.get(),
+        res, params_.voxel_size, 
+        make_float3(params_.origin.x(), params_.origin.y(), params_.origin.z()),
+        d_out_points.get(), d_out_colors.get()
+    );
+
+    std::vector<float3> h_points(total_points);
+    std::vector<uchar3> h_colors(total_points);
+    cudaMemcpy(h_points.data(), d_out_points.get(), total_points * sizeof(float3), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_colors.data(), d_out_colors.get(), total_points * sizeof(uchar3), cudaMemcpyDeviceToHost);
+
+    points_out.resize(total_points);
+    colors_out.resize(total_points * 3);
+    for (size_t i = 0; i < total_points; ++i) {
+        points_out[i] = Eigen::Vector3f(h_points[i].x, h_points[i].y, h_points[i].z);
+        colors_out[i*3+0] = h_colors[i].x;
+        colors_out[i*3+1] = h_colors[i].y;
+        colors_out[i*3+2] = h_colors[i].z;
+    }
 }
 
 } // namespace tsdf

@@ -301,6 +301,12 @@ float TSDFVolume::usageFraction() const {
 void TSDFVolume::extractGlobalPointCloud(std::vector<Eigen::Vector3f>& points_out,
                                          std::vector<uint8_t>&         colors_out) const
 {
+#ifdef CUDA_ENABLED
+    if (gpu_enabled_) {
+        extractGlobalPointCloudGPU(points_out, colors_out);
+        return;
+    }
+#endif
     std::shared_lock<std::shared_mutex> lk(mutex_);
     const int res = params_.resolution;
     
