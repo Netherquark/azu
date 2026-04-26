@@ -244,14 +244,14 @@ void SignalConditioner::applyDepthEma(std::vector<uint16_t>& depth, float min_de
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < FRAME_W * FRAME_H; ++i) {
         const float depth_m = rawDepthToMeters(depth[i]);
-        if (!isValidDepthMeters(depth_m, min_depth_m, max_depth_m)) {
+        if (!isValidDepthMeters(depth_m, min_depth_m, max_depth_m) || std::isnan(depth_m) || std::isinf(depth_m)) {
             ema_buf_m_[i] = 0.0f; // Prevent ghosting by resetting stale EMA values
             continue;
         }
 
         const float previous = ema_buf_m_[i];
         const float delta = std::abs(depth_m - previous);
-        const float filtered = (previous <= 0.0f || delta > kEmaJumpResetMeters)
+        const float filtered = (std::isnan(previous) || std::isinf(previous) || previous <= 0.0f || delta > kEmaJumpResetMeters)
             ? depth_m
             : (0.7f * depth_m + 0.3f * previous);
 
@@ -322,6 +322,11 @@ void SignalConditioner::guidedDepthFilter(std::vector<uint16_t>& depth, float mi
         for (int x = 0; x < FRAME_W; ++x) {
             const int idx = y * FRAME_W + x;
             const float center_depth = rawDepthToMeters(depth[idx]);
+            
+            if (center_depth <= 0.01f) {
+                depth_scratch_[idx] = 0;
+                continue;
+            }
             
             // Prevent guided filter from treating empty space as a massive hole-filler 
             // which smears sharp object geometry boundaries into the void.

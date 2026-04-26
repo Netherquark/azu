@@ -245,6 +245,10 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
 
             float J[6] = { n_live_cam.x(), n_live_cam.y(), n_live_cam.z(), cross.x(), cross.y(), cross.z() };
 
+            if (std::isnan(J[0]) || std::isinf(J[0]) || std::isnan(J[3]) || std::isinf(J[3])) {
+                continue;
+            }
+
             // Huber weight for robustness
             float abs_err = std::abs(err);
             float huber_k = 0.02f; // Reduced from 0.05m to fix ghosting/drift

@@ -352,8 +352,9 @@ Eigen::Vector3f MarchingCubes::interpolateEdge(
 {
     if (std::abs(v1) < 1e-6f) return p1;
     if (std::abs(v2) < 1e-6f) return p2;
-    if (std::abs(v1 - v2) < 1e-6f) return p1;
-    float t = v1 / (v1 - v2);
+    float diff = v1 - v2;
+    if (std::abs(diff) < 1e-6f) return p1;
+    float t = std::max(0.0f, std::min(1.0f, v1 / diff));
     return p1 + t * (p2 - p1);
 }
 
@@ -489,8 +490,9 @@ std::shared_ptr<MeshData> MarchingCubes::extract(const tsdf::TSDFVolume& volume,
                             y + CORNER_OFFSETS[c1][1], 
                             z + CORNER_OFFSETS[c1][2]);
                         
-                        float t = (std::abs(corner_vals[c0]) < 1e-6f) ? 0.0f : 
-                                  (corner_vals[c0] / (corner_vals[c0] - corner_vals[c1]));
+                        float diff = corner_vals[c0] - corner_vals[c1];
+                        float t = (std::abs(diff) < 1e-6f) ? 0.0f : 
+                                  (corner_vals[c0] / diff);
                         t = std::max(0.0f, std::min(1.0f, t));
 
                         edge_norms[e] = (n0 + t * (n1 - n0)).normalized();

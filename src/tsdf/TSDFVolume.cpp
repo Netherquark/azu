@@ -130,6 +130,7 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
                 if (sdf < -trunc) continue;
 
                 float tsdf_new = std::min(1.0f, sdf / trunc);
+                if (std::isnan(tsdf_new) || std::isinf(tsdf_new)) continue;
                 int vidx = idx(vx, vy, vz);
                 Voxel& vox = voxels_[vidx];
 
@@ -137,7 +138,10 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
                 float w_new = 1.0f;
                 float w_sum = std::min(w_old + w_new, max_w);
 
-                vox.tsdf   = (vox.tsdf * w_old + tsdf_new * w_new) / (w_old + w_new + 1e-6f);
+                float next_tsdf = (vox.tsdf * w_old + tsdf_new * w_new) / (w_old + w_new + 1e-6f);
+                if (std::isnan(next_tsdf) || std::isinf(next_tsdf)) continue;
+
+                vox.tsdf   = next_tsdf;
                 vox.weight = w_sum;
 
                 if (rgb && sdf > -trunc * 0.5f) {
