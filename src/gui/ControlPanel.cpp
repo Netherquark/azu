@@ -35,11 +35,11 @@ ControlPanel::ControlPanel(QWidget* parent) : QWidget(parent) {
 
 void ControlPanel::setupUI() {
     auto* root = new QVBoxLayout(this);
-    root->setSpacing(6);
-    root->setContentsMargins(6, 6, 6, 6);
+    root->setSpacing(10);
+    root->setContentsMargins(10, 10, 10, 10);
 
     lbl_status_ = new QLabel("Status: Idle", this);
-    lbl_status_->setStyleSheet("color: #aaa; font-size: 11px;");
+    lbl_status_->setStyleSheet("color: #aaa; font-size: 30px; font-weight: bold; padding: 8px 0;");
     root->addWidget(lbl_status_);
 
     auto* line = new QFrame(this);
@@ -52,9 +52,9 @@ void ControlPanel::setupUI() {
     btn_start_ = new QPushButton("▶  Start Capture", this);
     btn_stop_  = new QPushButton("■  Stop Capture",  this);
     btn_reset_ = new QPushButton("↺  Reset Scan",    this);
-    btn_start_->setStyleSheet("QPushButton { background: #2a7a2a; color: white; padding: 5px; border-radius: 4px; }");
-    btn_stop_ ->setStyleSheet("QPushButton { background: #7a2a2a; color: white; padding: 5px; border-radius: 4px; }");
-    btn_reset_->setStyleSheet("QPushButton { background: #444; color: white; padding: 5px; border-radius: 4px; }");
+    btn_start_->setStyleSheet("QPushButton { background: #2a7a2a; color: white; padding: 12px 20px; border-radius: 4px; font-size: 26px; }");
+    btn_stop_ ->setStyleSheet("QPushButton { background: #7a2a2a; color: white; padding: 12px 20px; border-radius: 4px; font-size: 26px; }");
+    btn_reset_->setStyleSheet("QPushButton { background: #444; color: white; padding: 12px 20px; border-radius: 4px; font-size: 26px; }");
     btn_stop_->setEnabled(false);
     v_cap->addWidget(btn_start_);
     v_cap->addWidget(btn_stop_);
@@ -67,8 +67,8 @@ void ControlPanel::setupUI() {
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     auto* inner = new QWidget(scroll);
     auto* inner_layout = new QVBoxLayout(inner);
-    inner_layout->setSpacing(6);
-    inner_layout->setContentsMargins(0, 0, 4, 0);
+    inner_layout->setSpacing(10);
+    inner_layout->setContentsMargins(0, 0, 6, 0);
 
     auto* grp_hp = new QGroupBox("Hyperparameters (Apply)", inner);
     auto* g = new QGridLayout(grp_hp);
@@ -138,7 +138,7 @@ void ControlPanel::setupUI() {
     g->addWidget(spin_icp_it0_, r++, 1);
 
     btn_apply_hyper_ = new QPushButton("Apply hyperparameters", grp_hp);
-    btn_apply_hyper_->setStyleSheet("QPushButton { background: #3a5a7a; color: white; padding: 5px; border-radius: 4px; }");
+    btn_apply_hyper_->setStyleSheet("QPushButton { background: #3a5a7a; color: white; padding: 12px 20px; border-radius: 4px; font-size: 26px; }");
     g->addWidget(btn_apply_hyper_, r++, 0, 1, 2);
 
     inner_layout->addWidget(grp_hp);
@@ -155,8 +155,10 @@ void ControlPanel::setupUI() {
     auto* v_exp = new QVBoxLayout(grp_export);
     btn_ply_ = new QPushButton("Export PLY", grp_export);
     btn_glb_ = new QPushButton("Export GLB (Unity)", grp_export);
-    btn_ply_->setStyleSheet("QPushButton { background: #2a4a7a; color: white; padding: 5px; border-radius: 4px; }");
-    btn_glb_->setStyleSheet("QPushButton { background: #4a2a7a; color: white; padding: 5px; border-radius: 4px; }");
+    btn_ply_->setStyleSheet("QPushButton { background: #2a4a7a; color: white; padding: 12px 20px; border-radius: 4px; font-size: 26px; }");
+    btn_glb_->setStyleSheet("QPushButton { background: #4a2a7a; color: white; padding: 12px 20px; border-radius: 4px; font-size: 26px; }");
+    btn_ply_->setEnabled(false);
+    btn_glb_->setEnabled(false);
     v_exp->addWidget(btn_ply_);
     v_exp->addWidget(btn_glb_);
     inner_layout->addWidget(grp_export);
@@ -173,8 +175,8 @@ void ControlPanel::setupUI() {
     scroll->setWidget(inner);
     root->addWidget(scroll, 1);
 
-    setMinimumWidth(268);
-    setMaximumWidth(320);
+    setMinimumWidth(420);
+    setMaximumWidth(550);
 }
 
 void ControlPanel::connectSignals() {
@@ -231,14 +233,14 @@ void ControlPanel::onPipelineStarted() {
     btn_start_->setEnabled(false);
     btn_stop_->setEnabled(true);
     lbl_status_->setText("Status: Running");
-    lbl_status_->setStyleSheet("color: #4f4; font-size: 11px;");
+    lbl_status_->setStyleSheet("color: #4f4; font-size: 30px; font-weight: bold; padding: 8px 0;");
 }
 
 void ControlPanel::onPipelineStopped() {
     btn_start_->setEnabled(true);
     btn_stop_->setEnabled(false);
     lbl_status_->setText("Status: Stopped");
-    lbl_status_->setStyleSheet("color: #fa4; font-size: 11px;");
+    lbl_status_->setStyleSheet("color: #fa4; font-size: 30px; font-weight: bold; padding: 8px 0;");
 }
 
 void ControlPanel::setExportEnabled(bool enabled) {
