@@ -10,6 +10,7 @@ and Unity-ready GLB export. Runs on Fedora 43 with optional CUDA acceleration.
 - Live Kinect v1 capture via **libfreenect** (no OpenNI)
 - **High-Performance GPU Pipeline**: Fully GPU-resident architecture optimized for NVIDIA RTX 30/40/50 series GPUs.
 - **Image-Centric TSDF**: $O(W \times H)$ pixel-parallel integration for real-time fidelity.
+- **Real-Time Super Resolution**: OpenMP-accelerated AMD FidelityFX CAS filter for enhanced RGB clarity and noise reduction.
 - **GPU-Resident ICP**: Multi-resolution tracking with block-reduced Hessian construction.
 - **Multi-Pass Marching Cubes**: Parallel mesh extraction via CUDA/Thrust (< 2ms per scan).
 - **OpenGL 3.3** real-time preview (point cloud + mesh modes)
@@ -145,6 +146,9 @@ Kinect HW
    ▼
 KinectSensor (libfreenect, capture thread)
    │  RawFrame (depth 11-bit + RGB 640×480)
+   ▼
+CPU Preprocessing (AMD FSR CAS Super Resolution)
+   │
    ▼
 Pipeline (GPU Resident)
    │

@@ -18,7 +18,7 @@ The system orchestrates four primary threads managed by `PipelineController`:
 
 ### 1.2 Data Flow
 1. **Sensor**: `KinectSensor` produces `RawFrame` (depth 11-bit, RGB).
-2. **Preprocessing**: GPU depth-to-meters conversion and vertex/normal generation.
+2. **Preprocessing**: GPU depth-to-meters conversion. CPU-based **AMD FidelityFX CAS (Super Resolution)** sharpens the RGB feed in-place prior to integration.
 3. **Tracking**: `ICPTracker` executes **GPU-based Hessian reduction**. It compares a live `FramePyramid` uploaded to VRAM against a **GPU-resident `ModelFrame`** (raycasted from TSDF) to find the 6-DOF camera pose.
 4. **Integration**: `TSDFVolume` performs **pixel-parallel integration** entirely on the GPU.
 5. **Meshing**: `MarchingCubes` executes a **multi-pass GPU extraction** (Classification → Prefix Sum → Generation).
@@ -46,6 +46,11 @@ The system orchestrates four primary threads managed by `PipelineController`:
     - `buildFrameData()`: Converts 11-bit depth to meters, back-projects to 3D camera space, and initializes RGB.
     - `computeNormals()`: Approximates surface normals using cross-products of neighboring vertices.
     - `buildFramePyramid()`: Generates 3-level downsampled pyramid (1x, 0.5x, 0.25x) for multi-resolution ICP.
+
+#### SuperResolution.h / .cpp
+- **Purpose**: Real-time Super Resolution and edge enhancement of the Kinect RGB feed.
+- **Algorithm**: Pure C++ port of AMD's FidelityFX Contrast Adaptive Sharpening (FSR 1.0 CAS) math.
+- **Performance**: Aggressively parallelized via `#pragma omp parallel for` (cache-coherent row processing) to execute well under the 30fps budget on standard CPU hardware (e.g. Ryzen 5650U). Applies enhancement *in-place* to `RawFrame->rgb` ensuring geometric depth relationships map identically at 640x480.
 
 ---
 
