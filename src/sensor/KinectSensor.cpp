@@ -34,7 +34,7 @@ bool KinectSensor::init() {
     if (device_) return true;
 
     if (freenect_init(&ctx_, nullptr) < 0) {
-        std::cerr << "[Sensor] freenect_init failed\n";
+        KFLOG_ERROR("Sensor", "freenect_init FAILED: Could not initialize libfreenect.");
         return false;
     }
     freenect_set_log_level(ctx_, FREENECT_LOG_ERROR);
@@ -43,12 +43,12 @@ bool KinectSensor::init() {
 
     int num_devices = freenect_num_devices(ctx_);
     if (num_devices < 1) {
-        std::cerr << "[Sensor] No Kinect devices found\n";
+        KFLOG_ERROR("Sensor", "No Kinect devices detected. Please check USB and power.");
         return false;
     }
 
     if (freenect_open_device(ctx_, &device_, 0) < 0) {
-        std::cerr << "[Sensor] freenect_open_device failed\n";
+        KFLOG_ERROR("Sensor", "freenect_open_device FAILED: Could not open Kinect index 0.");
         return false;
     }
 
@@ -95,7 +95,7 @@ void KinectSensor::captureLoop() {
         timeout.tv_usec = 10000; // 10ms poll
         int ret = freenect_process_events_timeout(ctx_, &timeout);
         if (ret < 0 && running_.load()) {
-            std::cerr << "[Sensor] freenect error: " << ret << "\n";
+            KFLOGF_ERROR("Sensor", "libfreenect event processing error: %d", ret);
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
@@ -132,12 +132,8 @@ void KinectSensor::onDepth(void* data, uint32_t timestamp) {
         depth_pending_->frame_id = ++frame_counter_;
 
         if (frame_callback_) {
-            static uint64_t pair_log = 0;
-            if (++pair_log % 90 == 0) {
-                std::ostringstream oss;
-                oss << "paired depth+RGB frame_id=" << depth_pending_->frame_id
-                    << " → pipeline";
-                KFLOG_DEBUG("Sensor", oss.str());
+            if (++pair_log % 150 == 0) {
+                KFLOGF_DEBUG("Sensor", "Frames synchronized: ID=%d", depth_pending_->frame_id);
             }
             frame_callback_(depth_pending_);
         } else {

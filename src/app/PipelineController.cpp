@@ -52,10 +52,10 @@ bool PipelineController::start() {
     std::lock_guard<std::mutex> ctrl_lk(control_mutex_);
     if (running_.load()) return true;
 
-    KFLOG_INFO("Pipeline", "Pipeline starting...");
+    KFLOG_INFO("Pipeline", "Starting reconstruction pipeline...");
     
     if (!sensor_->init()) {
-        KFLOG_ERROR("Pipeline", "Sensor init failed");
+        KFLOG_ERROR("Pipeline", "Sensor initialization FAILED. Check connection/drivers.");
         state_.store(PipelineState::Error);
         return false;
     }
@@ -82,7 +82,7 @@ bool PipelineController::start() {
     });
 
     if (!sensor_->start()) {
-        KFLOG_ERROR("Pipeline", "Sensor start failed");
+        KFLOG_ERROR("Pipeline", "Sensor start FAILED. Stream could not be opened.");
         running_.store(false);
         state_.store(PipelineState::Error);
         return false;
@@ -99,15 +99,16 @@ bool PipelineController::start() {
         }
         use_gpu_ = true;
         tsdf_->setGPUEnabled(true);
-        KFLOG_INFO("Pipeline", "CUDA initialization successful — using GPU acceleration.");
+        KFLOG_INFO("Pipeline", "CUDA hardware acceleration ENABLED (NVIDIA GPU detected).");
     } catch (const std::exception& e) {
         use_gpu_ = false;
         tsdf_->setGPUEnabled(false);
-        KFLOG_WARN("Pipeline", "CUDA initialization failed: " + std::string(e.what()) + " — falling back to CPU mode.");
+        KFLOGF_WARN("Pipeline", "CUDA initialization FAILED: %s. Falling back to CPU mode.", e.what());
     }
 #else
     use_gpu_ = false;
     tsdf_->setGPUEnabled(false);
+    KFLOG_INFO("Pipeline", "Using CPU-only path (CUDA not enabled in build).");
 #endif
 
     // Launch pipeline threads
@@ -118,7 +119,7 @@ bool PipelineController::start() {
     last_capture_time_  = steady_clock::now();
     last_tracking_time_ = steady_clock::now();
 
-    KFLOG_INFO("Pipeline", "Pipeline started (tracking + integration + meshing threads running)");
+    KFLOG_INFO("Pipeline", "Worker threads launched (Tracking, Integration, Meshing).");
     return true;
 }
 
@@ -143,8 +144,8 @@ void PipelineController::setHyperparams(const FusionHyperparams& h) {
     }
     tracker_->setParams(hp.icp);
     tsdf_->setParams(hp.tsdf);
-    KFLOG_INFO("Pipeline",
-               "Hyperparameters applied (depth clip, TSDF grid, ICP). Changing resolution clears the volume.");
+    KFLOGF_INFO("Pipeline", "New Hyperparameters Applied: D_min=%.2fm, D_max=%.2fm, TSDF_res=%.1fmm", 
+               hp.min_depth, hp.max_depth, hp.tsdf.voxel_size * 1000.0f);
 }
 
 void PipelineController::stop() {
@@ -153,7 +154,7 @@ void PipelineController::stop() {
     running_.store(false);
     state_.store(PipelineState::Stopped);
 
-    KFLOG_INFO("Pipeline", "Pipeline stopping (joining worker threads)...");
+    KFLOG_INFO("Pipeline", "Stopping pipeline... Waiting for worker threads to join.");
     sensor_->stop();
     sensor_->setFrameCallback(nullptr); // Unset to avoid late callbacks
 
@@ -173,7 +174,7 @@ void PipelineController::stop() {
         model_pingpong_.buffers[i]->d_normals.reset();
     }
 #endif
-    KFLOG_INFO("Pipeline", "Pipeline stopped");
+    KFLOG_INFO("Pipeline", "Pipeline shutdown complete.");
 }
 
 void PipelineController::reset() {
@@ -218,7 +219,7 @@ void PipelineController::reset() {
     metrics_      = PipelineMetrics{};
     shared_mesh_.update(std::make_shared<meshing::MeshData>());
     state_.store(PipelineState::Idle);
-    KFLOG_INFO("Pipeline", "Volume and pose reset; queues drained; mesh cleared");
+    KFLOG_INFO("Pipeline", "System RESET: Volume cleared, pose re-centered, queues drained.");
 }
 
 // Called from sensor capture thread — must be lightweight
@@ -248,11 +249,8 @@ void PipelineController::onRawFrame(std::shared_ptr<sensor::RawFrame> raw) {
         fc = metrics_.frame_count;
         inst_fps = metrics_.capture_fps;
     }
-    if (fc % 60 == 0) {
-        std::ostringstream oss;
-        oss << "sensor→pipeline: paired frames received=" << fc
-            << " instantaneous_capture_fps=" << inst_fps;
-        KFLOG_DEBUG("Pipeline", oss.str());
+    if (fc % 150 == 0) {
+        KFLOGF_DEBUG("Pipeline", "Sensor throughput: %d frames received @ %.2f FPS", fc, inst_fps);
     }
 }
 
@@ -325,7 +323,7 @@ void PipelineController::trackingLoop() {
                 metrics_.tracking_ok = true;
                 metrics_.icp_error   = 0.0f;
             }
-            KFLOG_INFO("Pipeline", "First depth frame: pose=identity, queued for TSDF integration (ICP starts next frame)");
+            KFLOGF_INFO("Pipeline", "First frame accepted (ID: %d). Initializing world origin.", frame->frame_id);
             continue;
         }
 
@@ -401,13 +399,21 @@ void PipelineController::trackingLoop() {
 
         if (!icp_result.tracking_ok) {
             static int lost_log = 0;
-            if (++lost_log % 45 == 1) {
-                std::ostringstream oss;
-                oss << (is_lost ? "[RELOCALIZING...] " : "[TRACKING LOST] ")
-                    << "ICP failed — inliers=" << icp_result.inliers
-                    << " err=" << icp_result.error
-                    << " dist_fail=" << icp_result.dist_filtered;
-                KFLOG_WARN("Pipeline", oss.str());
+            if (++lost_log % 30 == 1) {
+                const char* advice = "Move device slowly or improve scene geometry.";
+                if (icp_result.inliers < 1000) advice = "Insufficient geometry overlap (point the sensor at a known surface).";
+                else if (icp_result.error > 1e-3) advice = "High residual error (fast motion or dynamic objects).";
+                else if (icp_result.dist_filtered > 10000) advice = "Too many points filtered by distance (too close/far).";
+
+                KFLOGF_WARN("Pipeline", "%s ICP Failed: inliers=%d, residual=%.6f, filtered=%d. Advice: %s",
+                           (is_lost ? "[RELOCALIZING]" : "[TRACKING LOST]"),
+                           icp_result.inliers, icp_result.error, icp_result.dist_filtered, advice);
+            }
+        } else {
+            static int success_log = 0;
+            if (++success_log % 300 == 0) {
+                KFLOGF_INFO("Pipeline", "Tracking STABLE: avg_inliers=%d, avg_residual=%.6f", 
+                           icp_result.inliers, icp_result.error);
             }
         }
 
@@ -431,13 +437,11 @@ void PipelineController::trackingLoop() {
         } else {
             // RELOCALIZATION: If tracking lost, don't update state or pose, but don't stop.
             // We just don't integrate the frame. This keeps the model "clean".
+            if (!is_lost) {
+                 KFLOG_WARN("Pipeline", "Tracking lost! Suspension of TSDF integration. Entering relocalization mode...");
+            }
             state_.store(PipelineState::TrackingLost);
             releaseData(std::move(frame));
-            
-            static int recover_log = 0;
-            if (++recover_log % 30 == 0) {
-                KFLOG_WARN("Pipeline", "Tracking Lost — Integration suspended. Attempting relocalization...");
-            }
         }
     }
 }
@@ -459,15 +463,17 @@ void PipelineController::integrationLoop() {
             integration_queue_.pop();
         }
 
-        // Integrate into TSDF using THE POSE AT CAPTURE
-        tsdf_->integrate(frame->depth_meters.data(),
-                         frame->rgb.data(),
-                         frame->pose,
-                         static_cast<float>(sensor::FX),
-                         static_cast<float>(sensor::FY),
-                         static_cast<float>(sensor::CX),
-                         static_cast<float>(sensor::CY),
-                         frame->width, frame->height);
+        {
+            utils::ScopedTimer t("TSDF Integration");
+            tsdf_->integrate(frame->depth_meters.data(),
+                             frame->rgb.data(),
+                             frame->pose,
+                             static_cast<float>(sensor::FX),
+                             static_cast<float>(sensor::FY),
+                             static_cast<float>(sensor::CX),
+                             static_cast<float>(sensor::CY),
+                             frame->width, frame->height);
+        }
 
         // 2. Generate model frame for tracking (Ping-Pong back buffer)
         int integrated_count = tsdf_->integratedFrames();
@@ -500,11 +506,9 @@ void PipelineController::integrationLoop() {
             metrics_.volume_usage_pct  = tsdf_->usageFraction() * 100.0f;
         }
 
-        if (integrated_count % 20 == 0 && integrated_count > 0) {
-            std::ostringstream oss;
-            oss << "TSDF: integrated_frames=" << integrated_count
-                << " volume_fill=" << (tsdf_->usageFraction() * 100.0f) << "%";
-            KFLOG_INFO("Pipeline", oss.str());
+        if (integrated_count % 50 == 0 && integrated_count > 0) {
+            KFLOGF_INFO("Pipeline", "TSDF Status: %d frames integrated, volume fill=%.2f%%",
+                       integrated_count, (tsdf_->usageFraction() * 100.0f));
         }
 
         // Return frame to pool!
@@ -529,17 +533,20 @@ void PipelineController::meshingLoop() {
         is_meshing_.store(true);
 
         mesh_extract_progress_.store(0.0f);
-        KFLOG_INFO("Pipeline", "Marching cubes: mesh extraction started (CPU/GPU path)");
-
+        KFLOG_INFO("Pipeline", "Marching Cubes: Extracting mesh from TSDF volume...");
+        std::shared_ptr<meshing::MeshData> mesh;
+        {
+            utils::ScopedTimer t("Mesh Extraction");
 #ifdef CUDA_ENABLED
-        auto mesh = cubes_->extractGPU(*tsdf_);
+            mesh = cubes_->extractGPU(*tsdf_);
 #else
-        auto mesh = cubes_->extract(*tsdf_, [this](float p) {
-            mesh_extract_progress_.store(p);
-            std::lock_guard<std::mutex> lk(metrics_mutex_);
-            metrics_.mesh_extract_pct = p * 100.0f;
-        });
+            mesh = cubes_->extract(*tsdf_, [this](float p) {
+                mesh_extract_progress_.store(p);
+                std::lock_guard<std::mutex> lk(metrics_mutex_);
+                metrics_.mesh_extract_pct = p * 100.0f;
+            });
 #endif
+        }
 
         {
             std::lock_guard<std::mutex> lk(metrics_mutex_);
@@ -548,14 +555,12 @@ void PipelineController::meshingLoop() {
         }
 
         if (mesh && !mesh->empty()) {
-            std::ostringstream oss;
-            oss << "Mesh ready: triangles=" << mesh->triangleCount()
-                << " vertices=" << mesh->positions.size();
-            KFLOG_INFO("Pipeline", oss.str());
+            KFLOGF_INFO("Pipeline", "Mesh Extraction SUCCESS: %zu triangles, %zu vertices ready for rendering.",
+                       mesh->triangleCount(), mesh->positions.size());
             shared_mesh_.update(std::move(mesh));
             if (mesh_ready_cb_) mesh_ready_cb_();
         } else {
-            KFLOG_WARN("Pipeline", "Mesh extraction produced empty mesh (scan more surface or check TSDF fill)");
+            KFLOG_WARN("Pipeline", "Mesh Extraction EMPTY: Volume might be too sparse or clipping values too aggressive.");
             if (mesh_ready_cb_) mesh_ready_cb_();
         }
         is_meshing_.store(false);
