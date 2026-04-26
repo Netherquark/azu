@@ -164,52 +164,41 @@ __global__ void computeHessianKernel(
         }
     }
 
-    // Block reduction using shared memory
-    __shared__ float s_A[21];
-    __shared__ float s_b[6];
-    __shared__ float s_res;
-    __shared__ int   s_inliers;
-    __shared__ int   s_valid_live;
-    __shared__ int   s_valid_model;
-    __shared__ int   s_projected;
-    __shared__ int   s_dist_filtered;
-    __shared__ int   s_angle_filtered;
+    // Pack into array for warp reduction
+    float vals[34];
+    for (int i = 0; i < 21; ++i) vals[i] = local_A[i];
+    for (int i = 0; i < 6; ++i)  vals[21 + i] = local_b[i];
+    vals[27] = local_res;
+    vals[28] = (float)local_inliers;
+    vals[29] = (float)local_valid_live;
+    vals[30] = (float)local_valid_model;
+    vals[31] = (float)local_projected;
+    vals[32] = (float)local_dist_filtered;
+    vals[33] = (float)local_angle_filtered;
 
     int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    if (tid < 21) s_A[tid] = 0;
-    if (tid < 6)  s_b[tid] = 0;
-    if (tid == 21) s_res = 0;
-    if (tid == 22) s_inliers = 0;
-    if (tid == 23) s_valid_live = 0;
-    if (tid == 24) s_valid_model = 0;
-    if (tid == 25) s_projected = 0;
-    if (tid == 26) s_dist_filtered = 0;
-    if (tid == 27) s_angle_filtered = 0;
+    int lane = tid % 32;
+    int wid = tid / 32;
+    int num_warps = (blockDim.x * blockDim.y) / 32;
+
+    __shared__ float s_reduce[8][34]; // Up to 8 warps per block (256 threads)
+
+    for (int i = 0; i < 34; ++i) {
+        float val = vals[i];
+        for (int offset = 16; offset > 0; offset /= 2) {
+            val += __shfl_down_sync(0xffffffff, val, offset);
+        }
+        if (lane == 0) s_reduce[wid][i] = val;
+    }
     __syncthreads();
 
-        // Sum within block using atomics to shared memory
-    for (int i = 0; i < 21; ++i) atomicAdd(&s_A[i], local_A[i]);
-    for (int i = 0; i < 6; ++i)  atomicAdd(&s_b[i], local_b[i]);
-    atomicAdd(&s_res, local_res);
-    atomicAdd(&s_inliers, local_inliers);
-    atomicAdd(&s_valid_live, local_valid_live);
-    atomicAdd(&s_valid_model, local_valid_model);
-    atomicAdd(&s_projected, local_projected);
-    atomicAdd(&s_dist_filtered, local_dist_filtered);
-    atomicAdd(&s_angle_filtered, local_angle_filtered);
-    __syncthreads();
-
-    // One thread per block writes to global
-    if (tid == 0) {
-        for (int i = 0; i < 21; ++i) atomicAdd(&global_stats[i], s_A[i]);
-        for (int i = 0; i < 6; ++i)  atomicAdd(&global_stats[21 + i], s_b[i]);
-        atomicAdd(&global_stats[27], s_res);
-        atomicAdd(&global_stats[28], (float)s_inliers);
-        atomicAdd(&global_stats[29], (float)s_valid_live);
-        atomicAdd(&global_stats[30], (float)s_valid_model);
-        atomicAdd(&global_stats[31], (float)s_projected);
-        atomicAdd(&global_stats[32], (float)s_dist_filtered);
-        atomicAdd(&global_stats[33], (float)s_angle_filtered);
+    // The first 34 threads sum the partial warp results and do a single atomicAdd to global memory
+    if (tid < 34) {
+        float sum = 0.0f;
+        for (int w = 0; w < num_warps; ++w) {
+            sum += s_reduce[w][tid];
+        }
+        atomicAdd(&global_stats[tid], sum);
     }
 }
 
@@ -317,7 +306,10 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
         delta.block<3,3>(0,0) = dR;
         delta.block<3,1>(0,3) = update.head<3>();
 
-        result.pose = delta * result.pose;
+        // IMPORTANT: The twist (update) was calculated in the LIVE camera frame.
+        // Therefore, we must apply it by right-multiplying the delta transform.
+        // Applying it via left-multiplication would treat it as a twist in the global world frame, causing divergence.
+        result.pose = result.pose * delta;
         result.inliers = inliers;
         result.error = residual / fmaxf(1.0f, (float)inliers);
 

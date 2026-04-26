@@ -412,9 +412,9 @@ __global__ void generateMeshKernel(
     uint32_t offset = offsets[idx];
     uint32_t next_offset = offsets[idx + 1];
     if (offset == next_offset) return;
-
-    // BOUNDS CHECK: Prevent GPU buffer overflow
-    if (next_offset > max_tris) return;
+    
+    // Drop the strict next_offset > max_tris check to allow partial emission of triangles
+    if (offset >= max_tris) return;
 
     tsdf::VoxelGPU* voxels = (tsdf::VoxelGPU*)voxels_void;
 
@@ -464,7 +464,9 @@ __global__ void generateMeshKernel(
 
     uint32_t out_idx_start = offset * 3;
     int v_count = 0;
+    int current_tri = offset;
     for (int i = 0; i < 16 && c_tri_table[cube_idx][i] != -1; i += 3) {
+        if (current_tri >= max_tris) break;
         for (int k = 0; k < 3; ++k) {
             int e = c_tri_table[cube_idx][i + k];
             out_v[out_idx_start + v_count] = edge_v[e];
@@ -474,6 +476,7 @@ __global__ void generateMeshKernel(
             out_c[(out_idx_start + v_count)*3+2] = edge_c[e].z;
             v_count++;
         }
+        current_tri++;
     }
 }
 
@@ -520,6 +523,9 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
     size_t n = (size_t)params.resolution * params.resolution * params.resolution;
     dim3 block(8, 8, 8);
     dim3 grid((params.resolution + 7)/8, (params.resolution + 7)/8, (params.resolution + 7)/8);
+
+    // Initialize counts to zero to prevent uninitialized memory corruption from padding voxels
+    CUDA_CHECK(cudaMemset(d_voxel_tri_counts_.get(), 0, n * sizeof(uint32_t)));
 
     classifyVoxelKernel<<<grid, block>>>((void*)volume.getGPUVoxels(), params.resolution, d_voxel_tri_counts_.get());
     CUDA_CHECK_LAST();

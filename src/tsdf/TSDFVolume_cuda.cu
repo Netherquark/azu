@@ -105,25 +105,30 @@ __global__ void integrationKernel_PixelParallel(
         int lidx = vz * resolution * resolution + vy * resolution + vx;
         VoxelGPU& vox = voxels[lidx];
 
-        // Separate 32-bit atomic updates for weight and TSDF
-        float w_old, w_new;
-        int* addr_weight = (int*)&vox.weight;
-        int old_w_int = *addr_weight, assumed_w_int;
+        // Simultaneous 64-bit atomic update for weight and TSDF
+        unsigned long long* addr_tsdf_weight = (unsigned long long*)&vox.tsdf;
+        unsigned long long assumed_tw, old_tw = *addr_tsdf_weight;
+        float w_new;
         do {
-            assumed_w_int = old_w_int;
-            w_old = __int_as_float(assumed_w_int);
+            assumed_tw = old_tw;
+            
+            // Unpack 64-bit int into two 32-bit ints (Little-Endian: tsdf is lower 32-bits)
+            unsigned int t_old_int = (unsigned int)(assumed_tw & 0xFFFFFFFF);
+            unsigned int w_old_int = (unsigned int)(assumed_tw >> 32);
+            
+            float t_old = __int_as_float(t_old_int);
+            float w_old = __int_as_float(w_old_int);
+            
             w_new = fminf(w_old + 1.0f, max_weight);
-            old_w_int = atomicCAS(addr_weight, assumed_w_int, __float_as_int(w_new));
-        } while (assumed_w_int != old_w_int);
-
-        int* addr_tsdf = (int*)&vox.tsdf;
-        int old_t_int = *addr_tsdf, assumed_t_int;
-        do {
-            assumed_t_int = old_t_int;
-            float t_old = __int_as_float(assumed_t_int);
             float t_new = (t_old * w_old + tsdf_new) / (w_new + 1e-6f);
-            old_t_int = atomicCAS(addr_tsdf, assumed_t_int, __float_as_int(t_new));
-        } while (assumed_t_int != old_t_int);
+            
+            unsigned int t_new_int = __float_as_int(t_new);
+            unsigned int w_new_int = __float_as_int(w_new);
+            
+            unsigned long long new_tw = ((unsigned long long)w_new_int << 32) | (unsigned long long)t_new_int;
+            
+            old_tw = atomicCAS(addr_tsdf_weight, assumed_tw, new_tw);
+        } while (assumed_tw != old_tw);
         
         if (rgb) {
             int pidx = py * width + px;
@@ -137,7 +142,7 @@ __global__ void integrationKernel_PixelParallel(
                 do {
                     c_assumed = c_old_val;
                     float c_old = __int_as_float(c_assumed);
-                    float current_w = vox.weight;
+                    float current_w = w_new; // Safe non-torn read using locally computed deterministic weight
                     float prev_w = fmaxf(0.0f, current_w - 1.0f);
                     float c_new = (c_old * prev_w + m) / (current_w + 1e-6f);
                     c_new_val = __float_as_int(c_new);
@@ -241,16 +246,37 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
 __device__ float3 computeNormalGPU(void* voxels_void, int resolution, int x, int y, int z) {
     VoxelGPU* voxels = (VoxelGPU*)voxels_void;
 
-    auto get_tsdf = [&](int xi, int yi, int zi) {
-        if (xi < 0 || xi >= resolution || yi < 0 || yi >= resolution || zi < 0 || zi >= resolution) return 1.0f;
+    auto get_tsdf_and_valid = [&](int xi, int yi, int zi, float& tsdf_val, bool& valid) {
+        if (xi < 0 || xi >= resolution || yi < 0 || yi >= resolution || zi < 0 || zi >= resolution) {
+            valid = false;
+            tsdf_val = 1.0f;
+            return;
+        }
         VoxelGPU& v = voxels[zi * resolution * resolution + yi * resolution + xi];
-        return (v.weight <= 0.001f) ? 1.0f : v.tsdf;
+        if (v.weight <= 0.001f) {
+            valid = false;
+            tsdf_val = 1.0f;
+        } else {
+            valid = true;
+            tsdf_val = v.tsdf;
+        }
     };
 
+    float tsdf_x_p, tsdf_x_n, tsdf_y_p, tsdf_y_n, tsdf_z_p, tsdf_z_n, tsdf_c;
+    bool v_x_p, v_x_n, v_y_p, v_y_n, v_z_p, v_z_n, v_c;
+    
+    get_tsdf_and_valid(x, y, z, tsdf_c, v_c);
+    get_tsdf_and_valid(x + 1, y, z, tsdf_x_p, v_x_p);
+    get_tsdf_and_valid(x - 1, y, z, tsdf_x_n, v_x_n);
+    get_tsdf_and_valid(x, y + 1, z, tsdf_y_p, v_y_p);
+    get_tsdf_and_valid(x, y - 1, z, tsdf_y_n, v_y_n);
+    get_tsdf_and_valid(x, y, z + 1, tsdf_z_p, v_z_p);
+    get_tsdf_and_valid(x, y, z - 1, tsdf_z_n, v_z_n);
+
     float3 n;
-    n.x = get_tsdf(x + 1, y, z) - get_tsdf(x - 1, y, z);
-    n.y = get_tsdf(x, y + 1, z) - get_tsdf(x, y - 1, z);
-    n.z = get_tsdf(x, y, z + 1) - get_tsdf(x, y, z - 1);
+    n.x = (v_x_p && v_x_n) ? (tsdf_x_p - tsdf_x_n) : (v_x_p ? (tsdf_x_p - tsdf_c) : (v_x_n ? (tsdf_c - tsdf_x_n) : 0.0f));
+    n.y = (v_y_p && v_y_n) ? (tsdf_y_p - tsdf_y_n) : (v_y_p ? (tsdf_y_p - tsdf_c) : (v_y_n ? (tsdf_c - tsdf_y_n) : 0.0f));
+    n.z = (v_z_p && v_z_n) ? (tsdf_z_p - tsdf_z_n) : (v_z_p ? (tsdf_z_p - tsdf_c) : (v_z_n ? (tsdf_c - tsdf_z_n) : 0.0f));
 
     float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
     if (len > 1e-6f) {
@@ -296,6 +322,7 @@ __global__ void raycastKernel(
     float3 pos_w = make_float3(tx, ty, tz);
     float t = 0.4f; // min depth
     float prev_val = 1.0f;
+    bool inside_surface = false;
 
     for (int i = 0; i < 400; ++i) { // max steps
         float3 p = make_float3(pos_w.x + ray_w.x * t, pos_w.y + ray_w.y * t, pos_w.z + ray_w.z * t);
@@ -309,7 +336,16 @@ __global__ void raycastKernel(
         }
 
         float val = get_tsdf(vx, vy, vz);
-        if (prev_val > 0 && val < 0) {
+        
+        if (i == 0 && val < 0) {
+            inside_surface = true;
+        }
+        if (inside_surface && val > 0) {
+            inside_surface = false;
+            prev_val = val;
+        }
+
+        if (!inside_surface && prev_val > 0 && val < 0) {
             // Surface found
             float t_fine = t - voxel_size * (val / (val - prev_val));
             float3 pf = make_float3(pos_w.x + ray_w.x * t_fine, pos_w.y + ray_w.y * t_fine, pos_w.z + ray_w.z * t_fine);
@@ -328,7 +364,7 @@ __global__ void raycastKernel(
             return;
         }
         prev_val = val;
-        t += fmaxf(voxel_size, val * 0.1f); // skipping
+        t += fmaxf(voxel_size, fabsf(val) * 0.1f); // skipping
         if (t > 5.0f) break;
     }
     out_v[py * width + px] = make_float3(0,0,0);
@@ -463,19 +499,12 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
     CUDA_CHECK_LAST();
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    std::vector<float3> h_points(total_points);
-    std::vector<uchar3> h_colors(total_points);
-    CUDA_CHECK(cudaMemcpy(h_points.data(), d_out_points.get(), total_points * sizeof(float3), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_colors.data(), d_out_colors.get(), total_points * sizeof(uchar3), cudaMemcpyDeviceToHost));
-
     points_out.resize(total_points);
     colors_out.resize(total_points * 3);
-    for (size_t i = 0; i < total_points; ++i) {
-        points_out[i] = Eigen::Vector3f(h_points[i].x, h_points[i].y, h_points[i].z);
-        colors_out[i*3+0] = h_colors[i].x;
-        colors_out[i*3+1] = h_colors[i].y;
-        colors_out[i*3+2] = h_colors[i].z;
-    }
+    
+    // Direct copy from device into the correctly sized Eigen/byte vectors
+    CUDA_CHECK(cudaMemcpy(points_out.data(), d_out_points.get(), total_points * sizeof(float3), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(colors_out.data(), d_out_colors.get(), total_points * sizeof(uchar3), cudaMemcpyDeviceToHost));
 }
 
 } // namespace tsdf
