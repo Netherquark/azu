@@ -27,7 +27,7 @@ public:
     void setMode(RenderMode mode) { mode_ = mode; }
     RenderMode mode() const { return mode_; }
 
-    // Upload point cloud from frame data
+    // Upload point cloud from frame data (standard raycasted model or live frame)
     void uploadPointCloud(const sensor::FrameData& frame);
 
     // Upload mesh for rendering
@@ -52,7 +52,7 @@ private:
     ShaderProgram pc_shader_;
 
     // Mesh GL objects
-    unsigned int mesh_vao_ = 0, mesh_vbo_pos_ = 0, mesh_vbo_norm_ = 0, mesh_ebo_ = 0;
+    unsigned int mesh_vao_ = 0, mesh_vbo_pos_ = 0, mesh_vbo_norm_ = 0, mesh_vbo_col_ = 0, mesh_ebo_ = 0;
     int          mesh_index_count_ = 0;
     ShaderProgram mesh_shader_;
 

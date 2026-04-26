@@ -56,7 +56,12 @@ public:
                  float fx, float fy, float cx, float cy,
                  int width, int height,
                  Eigen::Vector3f*        vertices_out,
-                 Eigen::Vector3f*        normals_out) const;
+                 Eigen::Vector3f*        normals_out,
+                 uint8_t*                colors_out = nullptr) const;
+
+    /** Extract all occupied voxels as a point cloud (for full model view). */
+    void extractGlobalPointCloud(std::vector<Eigen::Vector3f>& points_out,
+                                 std::vector<uint8_t>&         colors_out) const;
 
     // Reset all voxels to initial state
     void reset();
@@ -93,7 +98,8 @@ public:
     void raycastGPU(const Eigen::Matrix4f& pose,
                     float fx, float fy, float cx, float cy,
                     int width, int height,
-                    float3* d_vertices, float3* d_normals);
+                    float3* d_vertices, float3* d_normals,
+                    uchar3* d_colors = nullptr);
 
     void* getGPUVoxels() const { return (void*)d_voxels_.get(); }
 #endif

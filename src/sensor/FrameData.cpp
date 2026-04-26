@@ -26,7 +26,14 @@ void invalidatePixel(FrameData& frame, int idx) {
 void suppressBackgroundShadowPixels(FrameData& frame) {
     const int W = frame.width;
     const int H = frame.height;
-    std::vector<uint8_t> invalidate(frame.depth_meters.size(), 0);
+    
+    // Use a static bitset or reused vector to avoid per-frame allocation
+    static std::vector<uint8_t> invalidate_mask;
+    if (invalidate_mask.size() != frame.depth_meters.size()) {
+        invalidate_mask.assign(frame.depth_meters.size(), 0);
+    } else {
+        std::fill(invalidate_mask.begin(), invalidate_mask.end(), 0);
+    }
 
     #pragma omp parallel for schedule(static)
     for (int y = 1; y < H - 1; ++y) {
@@ -37,10 +44,7 @@ void suppressBackgroundShadowPixels(FrameData& frame) {
 
             const float jump = depthJumpThreshold(d);
             const int neighbors[4] = {
-                idx - 1,
-                idx + 1,
-                idx - W,
-                idx + W
+                idx - 1, idx + 1, idx - W, idx + W
             };
 
             int closer_neighbors = 0;
@@ -51,26 +55,37 @@ void suppressBackgroundShadowPixels(FrameData& frame) {
                 }
             }
 
-            // Pixels significantly behind nearby foreground on multiple sides are
-            // usually Kinect edge-shadow bleed rather than trustworthy background.
             if (closer_neighbors >= 2) {
-                invalidate[idx] = 1;
+                invalidate_mask[idx] = 1;
             }
         }
     }
 
-    for (size_t i = 0; i < invalidate.size(); ++i) {
-        if (invalidate[i]) invalidatePixel(frame, static_cast<int>(i));
+    for (size_t i = 0; i < invalidate_mask.size(); ++i) {
+        if (invalidate_mask[i]) invalidatePixel(frame, static_cast<int>(i));
     }
 }
 
 void bilateralFilter(FrameData& frame) {
     const int W = frame.width;
     const int H = frame.height;
-    std::vector<float> filtered = frame.depth_meters;
+    
+    // Static spatial kernel to avoid re-calculation
+    static const float sigma_s = 2.0f;
+    static float spatial_weights[25];
+    static bool spatial_init = false;
+    if (!spatial_init) {
+        for (int dy = -2; dy <= 2; ++dy) {
+            for (int dx = -2; dx <= 2; ++dx) {
+                float dist_sq = static_cast<float>(dx*dx + dy*dy);
+                spatial_weights[(dy+2)*5 + (dx+2)] = std::exp(-dist_sq / (2.0f * sigma_s * sigma_s));
+            }
+        }
+        spatial_init = true;
+    }
 
-    const float sigma_s = 2.0f; // Spatial sigma
-    const float sigma_r = 0.05f; // Range sigma (meters)
+    std::vector<float> filtered = frame.depth_meters;
+    const float sigma_r_inv_sq = 1.0f / (2.0f * 0.05f * 0.05f);
 
     #pragma omp parallel for schedule(static)
     for (int y = 2; y < H - 2; ++y) {
@@ -87,11 +102,9 @@ void bilateralFilter(FrameData& frame) {
                     float d_n = frame.depth_meters[(y + dy) * W + (x + dx)];
                     if (d_n <= 0.0f) continue;
 
-                    float dist_s_sq = static_cast<float>(dx*dx + dy*dy);
-                    float dist_r = std::abs(d_c - d_n);
-
-                    float w = std::exp(-dist_s_sq / (2.0f * sigma_s * sigma_s)) *
-                              std::exp(-(dist_r * dist_r) / (2.0f * sigma_r * sigma_r));
+                    float dist_r = d_c - d_n;
+                    float w_r = std::exp(-(dist_r * dist_r) * sigma_r_inv_sq);
+                    float w = spatial_weights[(dy+2)*5 + (dx+2)] * w_r;
                     
                     sum_w += w;
                     sum_d += w * d_n;

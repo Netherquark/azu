@@ -29,6 +29,11 @@ __global__ void computeHessianKernel(
     float r10, float r11, float r12,
     float r20, float r21, float r22,
     float tx,  float ty,  float tz,
+    // World to Ref transform (for model vertices/normals)
+    float rw00, float rw01, float rw02,
+    float rw10, float rw11, float rw12,
+    float rw20, float rw21, float rw22,
+    float twx,  float twy,  float twz,
     // Output: 21 (A) + 6 (b) + 1 (res) + 1 (inliers) + 5 (diagnostics) = 34 floats
     float* global_stats)
 {
@@ -65,10 +70,21 @@ __global__ void computeHessianKernel(
                 if (mx >= 0 && mx < model_w && my >= 0 && my < model_h) {
                     local_projected++;
                     int midx = my * model_w + mx;
-                    float3 v_model = model_vertices[midx];
-                    float3 n_model = model_normals[midx];
+                    float3 v_model_world = model_vertices[midx];
+                    float3 n_model_world = model_normals[midx];
 
-                    if (v_model.z > 0.001f && n_model.z != 0) { // simplified validity check
+                    if (v_model_world.z != 0) { // validity check
+                        // Transform world model point/normal to reference camera space
+                        float3 v_model;
+                        v_model.x = rw00 * v_model_world.x + rw01 * v_model_world.y + rw02 * v_model_world.z + twx;
+                        v_model.y = rw10 * v_model_world.x + rw11 * v_model_world.y + rw12 * v_model_world.z + twy;
+                        v_model.z = rw20 * v_model_world.x + rw21 * v_model_world.y + rw22 * v_model_world.z + twz;
+                        
+                        float3 n_model;
+                        n_model.x = rw00 * n_model_world.x + rw01 * n_model_world.y + rw02 * n_model_world.z;
+                        n_model.y = rw10 * n_model_world.x + rw11 * n_model_world.y + rw12 * n_model_world.z;
+                        n_model.z = rw20 * n_model_world.x + rw21 * n_model_world.y + rw22 * n_model_world.z;
+
                         local_valid_model++;
                         // Correspondence checks
                         float dx = v_ref.x - v_model.x;
@@ -91,7 +107,7 @@ __global__ void computeHessianKernel(
                                 
                                 // Jacobian in current (live) camera space
                                 // J = [n_model_in_live; cross(v_live, n_model_in_live)]
-                                // Rotate n_model back to live space
+                                // Rotate n_model back to live space: n_model_live = R_rel^T * n_model
                                 float3 n_model_live;
                                 n_model_live.x = r00 * n_model.x + r10 * n_model.y + r20 * n_model.z;
                                 n_model_live.y = r01 * n_model.x + r11 * n_model.y + r21 * n_model.z;
@@ -148,7 +164,7 @@ __global__ void computeHessianKernel(
     if (tid == 27) s_angle_filtered = 0;
     __syncthreads();
 
-    // Sum within block using atomics to shared memory
+        // Sum within block using atomics to shared memory
     for (int i = 0; i < 21; ++i) atomicAdd(&s_A[i], local_A[i]);
     for (int i = 0; i < 6; ++i)  atomicAdd(&s_b[i], local_b[i]);
     atomicAdd(&s_res, local_res);
@@ -208,11 +224,15 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
     float angle_thresh_cos = cosf(params_.angle_threshold * 3.14159f / 180.0f);
 
     for (int iter = 0; iter < max_iter; ++iter) {
-        cudaMemset(d_hessian_.get(), 0, 32 * sizeof(float));
+        cudaMemset(d_hessian_.get(), 0, 64 * sizeof(float));
 
         Eigen::Matrix4f rel = ref_pose.inverse() * result.pose;
         Eigen::Matrix3f R = rel.block<3,3>(0,0);
         Eigen::Vector3f t = rel.block<3,1>(0,3);
+
+        Eigen::Matrix4f w2ref = ref_pose.inverse();
+        Eigen::Matrix3f Rw = w2ref.block<3,3>(0,0);
+        Eigen::Vector3f tw = w2ref.block<3,1>(0,3);
 
         dim3 block(16, 16);
         dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
@@ -228,6 +248,10 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
             R(1,0), R(1,1), R(1,2),
             R(2,0), R(2,1), R(2,2),
             t.x(), t.y(), t.z(),
+            Rw(0,0), Rw(0,1), Rw(0,2),
+            Rw(1,0), Rw(1,1), Rw(1,2),
+            Rw(2,0), Rw(2,1), Rw(2,2),
+            tw.x(), tw.y(), tw.z(),
             d_hessian_.get()
         );
 

@@ -244,7 +244,7 @@ __global__ void raycastKernel(
     float r10, float r11, float r12, float ty,
     float r20, float r21, float r22, float tz,
     int width, int height,
-    float3* out_v, float3* out_n)
+    float3* out_v, float3* out_n, uchar3* out_c)
 {
     int px = blockIdx.x * blockDim.x + threadIdx.x;
     int py = blockIdx.y * blockDim.y + threadIdx.y;
@@ -290,22 +290,17 @@ __global__ void raycastKernel(
             float t_fine = t - voxel_size * (val / (val - prev_val));
             float3 pf = make_float3(pos_w.x + ray_w.x * t_fine, pos_w.y + ray_w.y * t_fine, pos_w.z + ray_w.z * t_fine);
             
-            // Transform back to camera space for the output vertex map
-            // cam = R^T (world - t)
-            float3 pc;
-            pc.x = r00 * (pf.x - tx) + r10 * (pf.y - ty) + r20 * (pf.z - tz);
-            pc.y = r01 * (pf.x - tx) + r11 * (pf.y - ty) + r21 * (pf.z - tz);
-            pc.z = r02 * (pf.x - tx) + r12 * (pf.y - ty) + r22 * (pf.z - tz);
+            // Output WORLD SPACE vertex (consistent with CPU)
+            out_v[py * width + px] = pf;
             
-            out_v[py * width + px] = pc;
-            
-            // Compute normal in world space then rotate to camera space
+            // Compute normal in world space
             float3 n_w = computeNormalGPU(voxels_void, resolution, vx, vy, vz);
-            float3 n_c;
-            n_c.x = r00 * n_w.x + r10 * n_w.y + r20 * n_w.z;
-            n_c.y = r01 * n_w.x + r11 * n_w.y + r21 * n_w.z;
-            n_c.z = r02 * n_w.x + r12 * n_w.y + r22 * n_w.z;
-            out_n[py * width + px] = n_c;
+            out_n[py * width + px] = n_w;
+
+            if (out_c) {
+                VoxelGPU& v = voxels[vz * resolution * resolution + vy * resolution + vx];
+                out_c[py * width + px] = make_uchar3((uint8_t)v.r, (uint8_t)v.g, (uint8_t)v.b);
+            }
             return;
         }
         prev_val = val;
@@ -314,12 +309,14 @@ __global__ void raycastKernel(
     }
     out_v[py * width + px] = make_float3(0,0,0);
     out_n[py * width + px] = make_float3(0,0,0);
+    if (out_c) out_c[py * width + px] = make_uchar3(0,0,0);
 }
 
 void TSDFVolume::raycastGPU(const Eigen::Matrix4f& pose,
                              float fx, float fy, float cx, float cy,
                              int width, int height,
-                             float3* d_vertices, float3* d_normals)
+                             float3* d_vertices, float3* d_normals,
+                             uchar3* d_colors)
 {
     if (!gpu_valid_) return;
 
@@ -336,7 +333,7 @@ void TSDFVolume::raycastGPU(const Eigen::Matrix4f& pose,
         R(0,0), R(0,1), R(0,2), t.x(),
         R(1,0), R(1,1), R(1,2), t.y(),
         R(2,0), R(2,1), R(2,2), t.z(),
-        width, height, d_vertices, d_normals
+        width, height, d_vertices, d_normals, d_colors
     );
     cudaDeviceSynchronize();
 }

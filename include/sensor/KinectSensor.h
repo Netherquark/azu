@@ -87,6 +87,7 @@ private:
     std::shared_ptr<RawFrame> rgb_pending_;
 
     uint64_t frame_counter_ = 0;
+    uint64_t pair_log_      = 0;
 
     std::atomic<bool> running_{false};
     std::thread       capture_thread_;
