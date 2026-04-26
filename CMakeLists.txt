@@ -70,9 +70,10 @@ if(NOT Qt5_FOUND)
     endif()
 endif()
 
+# Enable Qt Automatic tools
+set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
-# Note: We use explicit qt5_wrap_cpp below for specific GUI headers to manage complex include paths.
 
 # libfreenect (Kinect v1)
 find_package(PkgConfig REQUIRED)
@@ -117,8 +118,11 @@ file(GLOB_RECURSE GUI_SOURCES CONFIGURE_DEPENDS "src/gui/*.cpp")
 file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS "src/app/*.cpp")
 file(GLOB_RECURSE UTILS_SOURCES CONFIGURE_DEPENDS "src/utils/*.cpp")
 
+file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "include/*.h")
+
 set(ALL_SOURCES
     src/main.cpp
+    ${HEADERS}
     ${SENSOR_SOURCES}
     ${TRACKING_SOURCES}
     ${TSDF_SOURCES}
@@ -138,21 +142,6 @@ endif()
 # ---- Build Target ----
 
 add_executable(KinectFusionQt ${ALL_SOURCES})
-
-# Qt MOC generation
-# We explicitly list headers that require MOC to ensure they are found regardless of search depth
-set(MOC_HEADERS
-    include/gui/MainWindow.h
-    include/gui/OpenGLWidget.h
-    include/gui/MetricsPanel.h
-    include/gui/ControlPanel.h
-    include/gui/NavigationGizmo.h
-)
-qt5_wrap_cpp(MOC_SOURCES ${MOC_HEADERS}
-    TARGET KinectFusionQt
-    OPTIONS --no-notes
-)
-target_sources(KinectFusionQt PRIVATE ${MOC_SOURCES})
 
 # Include Directories
 target_include_directories(KinectFusionQt PRIVATE

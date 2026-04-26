@@ -186,6 +186,7 @@ Following a rigorous adversarial review, the system has been hardened for produc
 
 ### 5.3 Build System & Engineering
 - **Robust Dependency Discovery**: Hardened `CMakeLists.txt` with reliable `Qt5` discovery paths and proper implementation guards for headers like `tinygltf`.
+- **Modernized Qt Build Pipeline**: Transitioned to `CMAKE_AUTOMOC`, `CMAKE_AUTOUIC`, and `CMAKE_AUTORCC`. All project headers are now explicitly tracked in the build target, ensuring robust Meta-Object Compiler (MOC) generation and eliminating "undefined reference" errors during incremental builds or post-`git pull` states.
 
 ---
 

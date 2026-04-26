@@ -78,22 +78,23 @@ sudo usermod -aG plugdev $USER
 
 ---
 
-## Building the Project
+### 3. Building the Project
 
-The build system uses CMake 3.18+ and supports optimized Release builds with LTO (Link Time Optimization).
+The build system uses **CMake 3.18+** and is optimized for speed and reliability using **Ninja** and automated Qt tool handling (**AUTOMOC**).
 
 ```bash
 mkdir build && cd build
 
-# Strategy A: Standard Release Build (Recommended)
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+# Recommended: Release build with Ninja
+cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release
+ninja
 
-# Strategy B: Build with CUDA enabled
-# (Automatically detected if nvcc is in PATH)
+# Alternative: Standard Make build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
+
+**Note:** If you experience "undefined reference" errors after a `git pull`, it is highly recommended to perform a clean build (`rm -rf build/*`) to refresh the automated Qt metadata.
 
 **Note:** The CMake configuration will output a diagnostic summary at the end of the `cmake ..` step, showing which features (CUDA, OpenMP, etc.) are enabled.
 
@@ -192,6 +193,7 @@ Scale is **1 unit = 1 metre** throughout.
 | Tracking immediately lost | Ensure scene has enough texture/geometry; reduce motion speed; **Check `--verbose` logs for `inliers` and `model_pts`** |
 | Low FPS | Disable CUDA if GPU init fails; ensure Release build |
 | GLB doesn't import to Unity | Ensure Unity 2019.4+ which includes built-in GLTF support, or use GLTFast package |
+| Linker / Undefined Reference errors | Run `rm -rf build/*` and re-run `cmake .. -GNinja` to refresh Qt meta-object data |
 | CUDA build fails | Check `nvcc --version`; set `CMAKE_CUDA_ARCHITECTURES=86` for RTX 5070 |
 
 ---
