@@ -24,12 +24,12 @@ public:
     void setMode(Mode mode);
     Mode mode() const { return mode_; }
 
-    void setAzimuth(float az) { azimuth_ = az; }
-    void setElevation(float el) { elevation_ = el; }
+    void setAzimuth(float az) { yaw_ = az; }
+    void setElevation(float el) { pitch_ = el; }
     void setRoll(float r) { roll_ = r; }
 
-    float azimuth() const { return azimuth_; }
-    float elevation() const { return elevation_; }
+    float azimuth() const { return yaw_; }
+    float elevation() const { return pitch_; }
     float roll() const { return roll_; }
 
     void setTarget(const Eigen::Vector3f& t) { target_ = t; }

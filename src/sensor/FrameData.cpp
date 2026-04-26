@@ -93,6 +93,27 @@ void medianFilter3x3(FrameData& frame) {
     frame.depth_meters = std::move(filtered);
 }
 
+void updateVerticesFromDepth(FrameData& frame) {
+    const int W = frame.width;
+    const int H = frame.height;
+    const float fx_inv = 1.0f / static_cast<float>(FX);
+    const float fy_inv = 1.0f / static_cast<float>(FY);
+
+    #pragma omp parallel for schedule(static)
+    for (int idx = 0; idx < W * H; ++idx) {
+        float d = frame.depth_meters[idx];
+        if (d > 0.0f) {
+            int x = idx % W;
+            int y = idx / W;
+            float vx = (static_cast<float>(x) - static_cast<float>(CX)) * fx_inv * d;
+            float vy = (static_cast<float>(y) - static_cast<float>(CY)) * fy_inv * d;
+            frame.vertices[idx] = Eigen::Vector3f(vx, vy, d);
+        } else {
+            frame.vertices[idx] = Eigen::Vector3f::Zero();
+        }
+    }
+}
+
 } // namespace
 
 void buildFrameData(const uint16_t* raw_depth,
@@ -131,6 +152,7 @@ void buildFrameData(const uint16_t* raw_depth,
 
     suppressBackgroundShadowPixels(out);
     medianFilter3x3(out);
+    updateVerticesFromDepth(out);
     computeNormals(out);
 }
 

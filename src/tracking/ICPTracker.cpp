@@ -82,7 +82,7 @@ ICPResult ICPTracker::trackLevel(const sensor::FrameData& live_level,
         delta.block<3,3>(0,0) = R;
         delta(0,3) = tx; delta(1,3) = ty; delta(2,3) = tz;
 
-        result.pose     = delta * result.pose;
+        result.pose     = result.pose * delta;
         result.error    = residual / static_cast<float>(std::max(inlier_count, 1));
         result.inliers  = inlier_count;
 
