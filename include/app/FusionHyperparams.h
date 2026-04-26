@@ -11,8 +11,8 @@ namespace app {
  * Depth range is applied when building frame geometry and mirrored into ICP params.
  */
 struct FusionHyperparams {
-    float min_depth = 0.05f;
-    float max_depth = 8.0f;
+    float min_depth = 0.30f;
+    float max_depth = 2.50f;
 
     tsdf::TSDFParams    tsdf{};
     tracking::ICPParams icp{};

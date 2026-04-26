@@ -11,6 +11,61 @@
 namespace kfusion {
 namespace sensor {
 
+namespace {
+
+inline float depthJumpThreshold(float depth_m) {
+    return std::max(0.03f, depth_m * 0.05f);
+}
+
+void invalidatePixel(FrameData& frame, int idx) {
+    frame.depth_meters[idx] = 0.0f;
+    frame.vertices[idx]     = Eigen::Vector3f::Zero();
+    frame.normals[idx]      = Eigen::Vector3f::Zero();
+}
+
+void suppressBackgroundShadowPixels(FrameData& frame) {
+    const int W = frame.width;
+    const int H = frame.height;
+    std::vector<uint8_t> invalidate(frame.depth_meters.size(), 0);
+
+    #pragma omp parallel for schedule(static)
+    for (int y = 1; y < H - 1; ++y) {
+        for (int x = 1; x < W - 1; ++x) {
+            const int idx = y * W + x;
+            const float d = frame.depth_meters[idx];
+            if (d <= 0.0f) continue;
+
+            const float jump = depthJumpThreshold(d);
+            const int neighbors[4] = {
+                idx - 1,
+                idx + 1,
+                idx - W,
+                idx + W
+            };
+
+            int closer_neighbors = 0;
+            for (int nidx : neighbors) {
+                const float dn = frame.depth_meters[nidx];
+                if (dn > 0.0f && d - dn > jump) {
+                    ++closer_neighbors;
+                }
+            }
+
+            // Pixels significantly behind nearby foreground on multiple sides are
+            // usually Kinect edge-shadow bleed rather than trustworthy background.
+            if (closer_neighbors >= 2) {
+                invalidate[idx] = 1;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < invalidate.size(); ++i) {
+        if (invalidate[i]) invalidatePixel(frame, static_cast<int>(i));
+    }
+}
+
+} // namespace
+
 void buildFrameData(const uint16_t* raw_depth,
                     const uint8_t*  raw_rgb,
                     FrameData&      out,
@@ -45,6 +100,7 @@ void buildFrameData(const uint16_t* raw_depth,
         }
     }
 
+    suppressBackgroundShadowPixels(out);
     computeNormals(out);
 }
 
@@ -66,6 +122,16 @@ void computeNormals(FrameData& frame) {
                 frame.depth_meters[l] <= 0.0f ||
                 frame.depth_meters[u] <= 0.0f ||
                 frame.depth_meters[d] <= 0.0f) {
+                frame.normals[c] = Eigen::Vector3f::Zero();
+                continue;
+            }
+
+            const float dc = frame.depth_meters[c];
+            const float jump = depthJumpThreshold(dc);
+            if (std::abs(dc - frame.depth_meters[r]) > jump ||
+                std::abs(dc - frame.depth_meters[l]) > jump ||
+                std::abs(dc - frame.depth_meters[u]) > jump ||
+                std::abs(dc - frame.depth_meters[d]) > jump) {
                 frame.normals[c] = Eigen::Vector3f::Zero();
                 continue;
             }
