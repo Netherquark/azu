@@ -353,15 +353,8 @@ void PipelineController::trackingLoop() {
     sensor_->releaseFrame(std::move(raw));
 
     // Notify UI (throttled, safe shared_ptr copy)
-    if (frame_ready_cb_) {
-        if (++ui_skip_counter_ % 3 == 0) {
-            auto frame_ui = frame; // shared_ptr copy, cheap
-            QMetaObject::invokeMethod(
-                qApp, [this, frame_ui]() {
-                    if (frame_ready_cb_) frame_ready_cb_(*frame_ui);
-                }, Qt::QueuedConnection);
-        }
-    }
+    // REMOVED: To prevent 30FPS UI Flickering & Callback Fighting with integrationLoop.
+    // The UI should only render the stable raycasted model from the integration thread.
 
     // First frame: initialize pose; skip tracking
     if (first_frame_) {

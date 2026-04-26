@@ -212,6 +212,10 @@ __global__ void computeHessianKernel(
                                 J[4] = v_live.z * n_model_live.x - v_live.x * n_model_live.z;
                                 J[5] = v_live.x * n_model_live.y - v_live.y * n_model_live.x;
 
+                                if (isnan(J[0]) || isinf(J[0]) || isnan(J[3]) || isinf(J[3])) {
+                                    continue;
+                                }
+
                                 float abs_err = fabsf(err);
                                 float huber_k = 0.02f; 
                                 float w = (abs_err <= huber_k) ? 1.0f : huber_k / abs_err;

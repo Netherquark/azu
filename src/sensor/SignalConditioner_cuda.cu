@@ -225,14 +225,14 @@ __global__ void applyDepthEmaKernel(uint16_t* depth, float* ema_buf, int w, int 
     if (idx >= w * h) return;
 
     float d = rawDepthToMetersGPU(depth[idx]);
-    if (d < min_d || d > max_d) {
+    if (d < min_d || d > max_d || isnan(d) || isinf(d)) {
         ema_buf[idx] = 0.0f;
         return;
     }
 
     float previous = ema_buf[idx];
     float delta = fabsf(d - previous);
-    float filtered = (previous <= 0.0f || delta > kEmaJumpResetMeters)
+    float filtered = (isnan(previous) || isinf(previous) || previous <= 0.0f || delta > kEmaJumpResetMeters)
         ? d
         : (0.7f * d + 0.3f * previous);
 
@@ -286,6 +286,10 @@ __global__ void guidedDepthFilterKernel(const uint16_t* depth, uint16_t* dst, co
 
     int idx = y * w + x;
     float center_d = rawDepthToMetersGPU(depth[idx]);
+    if (center_d <= 0.01f) {
+        dst[idx] = 0;
+        return;
+    }
     if (center_d < min_d || center_d > max_d) {
         dst[idx] = depth[idx];
         return;

@@ -341,8 +341,9 @@ __constant__ int c_edge_corners[12][2];
 __device__ float3 interpolateEdgeGPU(float3 p1, float v1, float3 p2, float v2) {
     if (fabsf(v1) < 1e-6f) return p1;
     if (fabsf(v2) < 1e-6f) return p2;
-    if (fabsf(v1 - v2) < 1e-6f) return p1;
-    float t = v1 / (v1 - v2);
+    float diff = v1 - v2;
+    if (fabsf(diff) < 1e-6f) return p1;
+    float t = fminf(fmaxf(v1 / diff, 0.0f), 1.0f);
     return make_float3(p1.x + t * (p2.x - p1.x),
                         p1.y + t * (p2.y - p1.y),
                         p1.z + t * (p2.z - p1.z));
@@ -453,7 +454,10 @@ __global__ void generateMeshKernel(
             
             float3 n1 = computeNormalGPU(voxels_void, resolution, x+c_corner_offsets[c1][0], y+c_corner_offsets[c1][1], z+c_corner_offsets[c1][2]);
             float3 n2 = computeNormalGPU(voxels_void, resolution, x+c_corner_offsets[c2][0], y+c_corner_offsets[c2][1], z+c_corner_offsets[c2][2]);
-            float t = corner_vals[c1] / (corner_vals[c1] - corner_vals[c2] + 1e-6f);
+            
+            float diff = corner_vals[c1] - corner_vals[c2];
+            float t = (fabsf(diff) < 1e-6f) ? 0.0f : fminf(fmaxf(corner_vals[c1] / diff, 0.0f), 1.0f);
+            
             edge_n[i] = make_float3(n1.x + t*(n2.x-n1.x), n1.y + t*(n2.y-n1.y), n1.z + t*(n2.z-n1.z));
             float len = 1.0f / sqrtf(edge_n[i].x*edge_n[i].x + edge_n[i].y*edge_n[i].y + edge_n[i].z*edge_n[i].z + 1e-9f);
             edge_n[i].x *= len; edge_n[i].y *= len; edge_n[i].z *= len;

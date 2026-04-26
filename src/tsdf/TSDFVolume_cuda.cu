@@ -74,12 +74,16 @@ __global__ void integrationKernel_VoxelParallel(
     if (sdf > truncation) return;
 
     float tsdf_new = fminf(1.0f, sdf / truncation);
+    if (isnan(tsdf_new) || isinf(tsdf_new)) return;
     
     float w_old = vox.weight;
     float w_new = 1.0f;
     float w_sum = fminf(w_old + w_new, max_weight);
 
-    vox.tsdf   = (vox.tsdf * w_old + tsdf_new * w_new) / (w_old + w_new + 1e-6f);
+    float new_tsdf = (vox.tsdf * w_old + tsdf_new * w_new) / (w_old + w_new + 1e-6f);
+    if (isnan(new_tsdf) || isinf(new_tsdf)) return;
+
+    vox.tsdf   = new_tsdf;
     vox.weight = w_sum;
 
     if (rgb && sdf > -truncation * 0.5f) {
