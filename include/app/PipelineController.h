@@ -108,9 +108,12 @@ private:
 
     // Frame recycling pool (FrameData) - Self-recycling via custom deleter
     static constexpr size_t    DATA_POOL_SIZE = 6;
-    std::vector<std::shared_ptr<sensor::FrameData>> data_pool_;
-    std::queue<sensor::FrameData*>                  free_data_queue_;
-    std::mutex                                      data_pool_mutex_;
+    struct DataPool {
+        std::vector<std::shared_ptr<sensor::FrameData>> data_pool;
+        std::queue<sensor::FrameData*>                  free_data_queue;
+        std::mutex                                      mutex;
+    };
+    std::shared_ptr<DataPool> data_pool_state_;
 
     // Raw frame queue (sensor callback → tracking thread)
     std::queue<std::shared_ptr<sensor::RawFrame>>  raw_queue_;

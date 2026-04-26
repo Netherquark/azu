@@ -31,9 +31,10 @@ PipelineController::PipelineController()
     cubes_   = std::make_unique<meshing::MarchingCubes>();
     
     // Initialize data pool for automated recycling
+    data_pool_state_ = std::make_shared<DataPool>();
     for (size_t i = 0; i < DATA_POOL_SIZE; ++i) {
-        data_pool_.push_back(std::make_shared<sensor::FrameData>());
-        free_data_queue_.push(data_pool_.back().get());
+        data_pool_state_->data_pool.push_back(std::make_shared<sensor::FrameData>());
+        data_pool_state_->free_data_queue.push(data_pool_state_->data_pool.back().get());
     }
 
     // Initialize ping-pong buffers
@@ -615,18 +616,19 @@ bool PipelineController::exportGLB(const std::string& path) {
 }
 
 std::shared_ptr<sensor::FrameData> PipelineController::acquireFreeData() {
-    std::lock_guard<std::mutex> lk(data_pool_mutex_);
-    if (free_data_queue_.empty()) return nullptr;
+    std::lock_guard<std::mutex> lk(data_pool_state_->mutex);
+    if (data_pool_state_->free_data_queue.empty()) return nullptr;
     
-    auto* raw_ptr = free_data_queue_.front();
-    free_data_queue_.pop();
+    auto* raw_ptr = data_pool_state_->free_data_queue.front();
+    data_pool_state_->free_data_queue.pop();
 
     // Zero-out or reset frame data if needed
     // raw_ptr->reset(); 
 
-    return std::shared_ptr<sensor::FrameData>(raw_ptr, [this, raw_ptr](sensor::FrameData*) {
-        std::lock_guard<std::mutex> lk_inner(this->data_pool_mutex_);
-        this->free_data_queue_.push(raw_ptr);
+    auto state = data_pool_state_;
+    return std::shared_ptr<sensor::FrameData>(raw_ptr, [state, raw_ptr](sensor::FrameData*) {
+        std::lock_guard<std::mutex> lk_inner(state->mutex);
+        state->free_data_queue.push(raw_ptr);
     });
 }
 

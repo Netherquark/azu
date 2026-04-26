@@ -81,8 +81,8 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
     const int res = params_.resolution;
 
     #pragma omp parallel for schedule(static)
-    for (int y = 0; y < res; ++y) {
-        for (int z = 0; z < res; ++z) {
+    for (int z = 0; z < res; ++z) {
+        for (int y = 0; y < res; ++y) {
             for (int x = 0; x < res; ++x) {
                 const int vidx = idx(x, y, z);
                 Voxel& vox = voxels_[vidx];

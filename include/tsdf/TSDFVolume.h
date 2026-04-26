@@ -65,9 +65,6 @@ public:
     const Voxel& voxelAt(int x, int y, int z) const;
     Voxel&       voxelAt(int x, int y, int z);
 
-    // Trilinear interpolated TSDF value at world position
-    float interpolate(const Eigen::Vector3f& world_pos) const;
-
     // Volume usage: fraction of voxels with weight > 0
     float usageFraction() const;
 
@@ -121,9 +118,6 @@ private:
                y >= 0 && y < params_.resolution &&
                z >= 0 && z < params_.resolution;
     }
-
-    // Trilinear TSDF sample; caller must already hold mutex_ (shared or unique)
-    float interpolateUnlocked(const Eigen::Vector3f& world_pos) const;
 
     // CPU integration kernel
     void integrateCPU(const float* depth_meters,

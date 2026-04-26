@@ -72,13 +72,14 @@ private:
 
     // Thread-safe pipeline state
     static constexpr size_t POOL_SIZE = 8;
-    std::vector<std::shared_ptr<RawFrame>> pool_;
     
-    // We'll use a mutex-guarded queue for safety since libfreenect callbacks 
-    // and the pipeline thread might access these concurrently (beyond SPSC scope).
-    std::mutex              queue_mutex_;
-    std::queue<std::shared_ptr<RawFrame>> ready_queue_;
-    std::queue<std::shared_ptr<RawFrame>> free_queue_;
+    struct PoolState {
+        std::vector<std::shared_ptr<RawFrame>> pool;
+        std::mutex                             mutex;
+        std::queue<std::shared_ptr<RawFrame>>  ready_queue;
+        std::queue<std::shared_ptr<RawFrame>>  free_queue;
+    };
+    std::shared_ptr<PoolState> pool_state_;
     
     // Pairing state
     std::mutex              sync_mutex_;
