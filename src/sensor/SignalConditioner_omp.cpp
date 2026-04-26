@@ -8,6 +8,10 @@
 #include <array>
 #include <cmath>
 
+#ifdef CUDA_ENABLED
+#include <cuda_runtime.h>
+#endif
+
 namespace kfusion {
 namespace sensor {
 
@@ -134,10 +138,21 @@ void SignalConditioner::reset() {
     std::fill(rgb_scratch_.begin(), rgb_scratch_.end(), 0);
     std::fill(guidance_luma_.begin(), guidance_luma_.end(), 0.0f);
     std::fill(depth_scratch_.begin(), depth_scratch_.end(), 0);
+
+#ifdef CUDA_ENABLED
+    if (d_rgb_in_) cudaMemset(d_rgb_in_.get(), 0, sr_rgb_.size());
+    if (d_rgb_out_) cudaMemset(d_rgb_out_.get(), 0, sr_rgb_.size());
+    if (d_guidance_luma_) cudaMemset(d_guidance_luma_.get(), 0, guidance_luma_.size() * sizeof(float));
+    if (d_depth_in_) cudaMemset(d_depth_in_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
+    if (d_depth_out_) cudaMemset(d_depth_out_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
+#endif
 }
 
 void SignalConditioner::resetEMA() {
     std::fill(ema_buf_m_.begin(), ema_buf_m_.end(), 0.0f);
+#ifdef CUDA_ENABLED
+    if (d_ema_buf_m_) cudaMemset(d_ema_buf_m_.get(), 0, ema_buf_m_.size() * sizeof(float));
+#endif
 }
 
 void SignalConditioner::process(RawFrame& raw, cudaStream_t cuda_stream, float min_depth_m, float max_depth_m) {

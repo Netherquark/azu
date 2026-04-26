@@ -3,6 +3,10 @@
 #include <cstdint>
 #include <vector>
 
+#ifdef CUDA_ENABLED
+#include "utils/CudaUniquePtr.h"
+#endif
+
 namespace kfusion {
 namespace sensor {
 
@@ -40,6 +44,14 @@ private:
 
 #ifdef CUDA_ENABLED
     bool processCuda(RawFrame& raw, cudaStream_t cuda_stream, float min_depth_m, float max_depth_m);
+
+    // GPU resources
+    utils::CudaUniquePtr<uint8_t>  d_rgb_in_;
+    utils::CudaUniquePtr<uint8_t>  d_rgb_out_;
+    utils::CudaUniquePtr<uint16_t> d_depth_in_;
+    utils::CudaUniquePtr<uint16_t> d_depth_out_;
+    utils::CudaUniquePtr<float>    d_ema_buf_m_;
+    utils::CudaUniquePtr<float>    d_guidance_luma_;
 #endif
 };
 
