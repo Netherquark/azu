@@ -137,8 +137,6 @@ void MainWindow::onResetClicked() {
 
     if (gl_widget_) gl_widget_->clearGeometry();
 
-    control_panel_->setExportEnabled(false);
-
     if (was_capturing) {
         if (!pipeline_->start()) {
             QMessageBox::critical(this, "Error",
@@ -166,7 +164,12 @@ void MainWindow::onExportPLY() {
     statusBar()->showMessage("Exporting PLY...");
     bool ok = pipeline_->exportPLY(path.toStdString());
     statusBar()->showMessage(ok ? ("PLY exported: " + path) : "PLY export FAILED.");
-    if (!ok) QMessageBox::warning(this, "Export Error", "PLY export failed. Is there a mesh?");
+    if (!ok) {
+        QMessageBox::warning(
+            this,
+            "Export Error",
+            "PLY export failed.\nScan a little more so a mesh can be extracted, then try again.");
+    }
 }
 
 void MainWindow::onExportGLB() {
@@ -177,7 +180,12 @@ void MainWindow::onExportGLB() {
     statusBar()->showMessage("Exporting GLB...");
     bool ok = pipeline_->exportGLB(path.toStdString());
     statusBar()->showMessage(ok ? ("GLB exported: " + path) : "GLB export FAILED.");
-    if (!ok) QMessageBox::warning(this, "Export Error", "GLB export failed. Is there a mesh?");
+    if (!ok) {
+        QMessageBox::warning(
+            this,
+            "Export Error",
+            "GLB export failed.\nScan a little more so a mesh can be extracted, then try again.");
+    }
 }
 
 void MainWindow::onModeChanged(int index) {
@@ -201,10 +209,6 @@ void MainWindow::onMeshReady() {
         gl_widget_->updateMesh(*mesh);
     }
 
-    // Enable export once we have a mesh
-    if (mesh && !mesh->empty()) {
-        control_panel_->setExportEnabled(true);
-    }
 }
 
 void MainWindow::onMetricsTimer() {
