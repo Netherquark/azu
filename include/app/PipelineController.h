@@ -4,6 +4,7 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <shared_mutex>
 #include <condition_variable>
 #include <functional>
 #include <queue>
@@ -89,6 +90,7 @@ private:
     std::unique_ptr<sensor::KinectSensor>    sensor_;
     std::unique_ptr<tracking::ICPTracker>    tracker_;
     std::unique_ptr<tsdf::TSDFVolume>        tsdf_;
+    std::shared_mutex                        tsdf_mutex_;
     std::unique_ptr<meshing::MarchingCubes>  cubes_;
     meshing::SharedMesh                      shared_mesh_;
 

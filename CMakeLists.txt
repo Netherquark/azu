@@ -41,8 +41,8 @@ if(CMAKE_CUDA_COMPILER)
     add_compile_definitions(CUDA_ENABLED)
     set(CMAKE_CUDA_STANDARD 17)
     
-    # Target architectures: 86 (Ampere), 89 (Ada), 100 (Blackwell/RTX 50-series)
-    set(CMAKE_CUDA_ARCHITECTURES 86 89 100) 
+    # Target architectures: 75 (Turing), 80 (Ampere), 86 (Ampere)
+    set(CMAKE_CUDA_ARCHITECTURES 75 80 86)
     
     # Modern CUDA detection for include paths
     find_package(CUDAToolkit REQUIRED)

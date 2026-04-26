@@ -63,6 +63,13 @@ bool PipelineController::start() {
         onRawFrame(std::move(raw));
     });
 
+    if (!sensor_->init()) {
+        KFLOG_ERROR("Pipeline", "Sensor initialization FAILED. Is the Kinect connected?");
+        running_.store(false);
+        state_.store(PipelineState::Error);
+        return false;
+    }
+
     if (!sensor_->start()) {
         KFLOG_ERROR("Pipeline", "Sensor start FAILED. Stream could not be opened.");
         running_.store(false);
@@ -501,6 +508,10 @@ void PipelineController::trackingLoop() {
                  if (preprocessor_) {
                      preprocessor_->resetTemporalState();
                  }
+                 // Clear the integration queue to prevent "garbage" poses from being integrated
+                 std::lock_guard<std::mutex> lk(integration_queue_mutex_);
+                 std::queue<std::shared_ptr<sensor::FrameData>> empty;
+                 std::swap(integration_queue_, empty);
             }
             state_.store(PipelineState::TrackingLost);
             releaseData(std::move(frame));
@@ -529,6 +540,7 @@ void PipelineController::integrationLoop() {
 
     {
       utils::ScopedTimer t("TSDF Integration");
+      std::unique_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
       tsdf_->integrate(
           frame->depth_meters.data(), frame->rgb.data(), frame->pose,
           static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
@@ -543,13 +555,15 @@ void PipelineController::integrationLoop() {
       auto &model_back = *(model_buffers_.buffers[back]);
 
 #ifdef CUDA_ENABLED
-      tsdf_->raycastGPU(frame->pose, static_cast<float>(sensor::FX),
-                        static_cast<float>(sensor::FY),
-                        static_cast<float>(sensor::CX),
-                        static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
-                        sensor::DEPTH_HEIGHT, model_back.d_vertices.get(),
-                        model_back.d_normals.get(), model_back.d_colors.get());
-
+      {
+          std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
+          tsdf_->raycastGPU(frame->pose, static_cast<float>(sensor::FX),
+                            static_cast<float>(sensor::FY),
+                            static_cast<float>(sensor::CX),
+                            static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
+                            sensor::DEPTH_HEIGHT, model_back.d_vertices.get(),
+                            model_back.d_normals.get(), model_back.d_colors.get());
+      }
       // Sync to CPU for UI preview
       if (frame_ready_cb_) {
         size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
@@ -565,7 +579,6 @@ void PipelineController::integrationLoop() {
         ui_frame->height = sensor::DEPTH_HEIGHT;
         ui_frame->vertices = model_back.vertices;
         ui_frame->rgb = model_back.colors;
-        ui_frame->depth_meters.assign(n, 1.0f);
         ui_frame->pose = Eigen::Matrix4f::Identity();
 
         QMetaObject::invokeMethod(
@@ -579,12 +592,15 @@ void PipelineController::integrationLoop() {
 #else
       // Optimization for CPU: Downsample raycast for UI preview to reduce
       // jitter/lag
-      tsdf_->raycast(frame->pose, static_cast<float>(sensor::FX),
-                     static_cast<float>(sensor::FY),
-                     static_cast<float>(sensor::CX),
-                     static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
-                     sensor::DEPTH_HEIGHT, model_back.vertices.data(),
-                     model_back.normals.data(), model_back.colors.data());
+      {
+          std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
+          tsdf_->raycast(frame->pose, static_cast<float>(sensor::FX),
+                         static_cast<float>(sensor::FY),
+                         static_cast<float>(sensor::CX),
+                         static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
+                         sensor::DEPTH_HEIGHT, model_back.vertices.data(),
+                         model_back.normals.data(), model_back.colors.data());
+      }
 
       if (frame_ready_cb_) {
         size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
@@ -609,7 +625,6 @@ void PipelineController::integrationLoop() {
             ui_frame->rgb[idx_ui * 3 + 2] = model_back.colors[idx_full * 3 + 2];
           }
         }
-        ui_frame->depth_meters.assign(n_ui, 1.0f);
         ui_frame->pose = Eigen::Matrix4f::Identity();
 
         QMetaObject::invokeMethod(
@@ -666,6 +681,7 @@ void PipelineController::meshingLoop() {
     std::shared_ptr<meshing::MeshData> mesh;
     {
       utils::ScopedTimer t("Mesh Extraction");
+      std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
 #ifdef CUDA_ENABLED
       mesh = cubes_->extractGPU(*tsdf_);
 #else

@@ -305,7 +305,7 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
             model.d_vertices.get(), model.d_normals.get(),
             width, height,
             model.width, model.height,
-            fx, fy, cx, cy,
+            kfusion::sensor::FX, kfusion::sensor::FY, kfusion::sensor::CX, kfusion::sensor::CY,
             params_.dist_threshold, angle_thresh_cos,
             R(0,0), R(0,1), R(0,2),
             R(1,0), R(1,1), R(1,2),
@@ -347,11 +347,22 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
         // Solve update with Tikhonov regularization
         A += Eigen::Matrix<float,6,6>::Identity() * 0.1f;
         Eigen::Matrix<float,6,1> update = A.ldlt().solve(b);
-        
+
+        // Reject NaNs or catastrophically large translational updates (>20cm per iteration)
+        if (!update.allFinite() || update.segment<3>(0).norm() > 0.2f) {
+            break;
+        }
+
         // Update pose (Rodrigues approximation)
-        Eigen::Matrix3f dR;
-        dR = Eigen::AngleAxisf(update.segment<3>(3).norm(), update.segment<3>(3).normalized()).toRotationMatrix();
-        if (update.segment<3>(3).norm() < 1e-6) dR = Eigen::Matrix3f::Identity();
+        float rot_norm = update.segment<3>(3).norm();
+        Eigen::Matrix3f dR = Eigen::Matrix3f::Identity();
+        if (rot_norm > 1e-4f) {
+            dR = Eigen::AngleAxisf(rot_norm, update.segment<3>(3).normalized()).toRotationMatrix();
+        } else {
+            dR(0,1) = -update(5); dR(0,2) =  update(4);
+            dR(1,0) =  update(5); dR(1,2) = -update(3);
+            dR(2,0) = -update(4); dR(2,1) =  update(3);
+        }
 
         Eigen::Matrix4f delta = Eigen::Matrix4f::Identity();
         delta.block<3,3>(0,0) = dR;
@@ -368,7 +379,7 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
         result.inliers = inliers;
         result.error = residual / fmaxf(1.0f, (float)inliers);
 
-        if (update.norm() < 1e-5) {
+        if (update.norm() < 5e-5f) {
             result.converged = true;
             break;
         }
