@@ -71,6 +71,7 @@ __global__ void integrationKernel_VoxelParallel(
 
     float sdf = d_meas - cz_c;
     if (sdf < -truncation) return;
+    if (sdf > truncation) return;
 
     float tsdf_new = fminf(1.0f, sdf / truncation);
     
@@ -289,8 +290,7 @@ __global__ void raycastKernel(
         if (tsdf < 1.0f) { // Probable geometry region
             if (prev_tsdf > 0.0f && tsdf <= 0.0f) {
                 // Surface zero-crossing found
-                float step = voxel_size * 0.5f;
-                float t_hit = t - step * tsdf / (tsdf - prev_tsdf + 1e-6f);
+                float t_hit = t - voxel_size * tsdf / (tsdf - prev_tsdf + 1e-6f);
                 float3 pf = make_float3(pos_w.x + ray_w.x * t_hit, pos_w.y + ray_w.y * t_hit, pos_w.z + ray_w.z * t_hit);
 
                 

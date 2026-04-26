@@ -384,17 +384,18 @@ bool SignalConditioner::processCuda(RawFrame& raw,
     denoiseDepthSpatialKernel<<<grid, block, 0, stream>>>(d_depth_in_.get(), d_depth_out_.get(), w, h, min_depth_m, max_depth_m);
     CUDA_CHECK_LAST();
     
-    int total_threads = n;
-    int block_size = 256;
-    int grid_size = (total_threads + block_size - 1) / block_size;
-    applyDepthEmaKernel<<<grid_size, block_size, 0, stream>>>(d_depth_out_.get(), d_ema_buf_m_.get(), w, h, min_depth_m, max_depth_m);
-    CUDA_CHECK_LAST();
-
     fillDepthHolesKernel<<<grid, block, 0, stream>>>(d_depth_out_.get(), d_depth_in_.get(), w, h, min_depth_m, max_depth_m);
     CUDA_CHECK_LAST();
     
     // 4. Guided Depth Filter
     guidedDepthFilterKernel<<<grid, block, 0, stream>>>(d_depth_in_.get(), d_depth_out_.get(), d_guidance_luma_.get(), w, h, min_depth_m, max_depth_m);
+    CUDA_CHECK_LAST();
+
+    // 5. Temporal Stabilization (EMA)
+    int total_threads = n;
+    int block_size = 256;
+    int grid_size = (total_threads + block_size - 1) / block_size;
+    applyDepthEmaKernel<<<grid_size, block_size, 0, stream>>>(d_depth_out_.get(), d_ema_buf_m_.get(), w, h, min_depth_m, max_depth_m);
     CUDA_CHECK_LAST();
 
     // 5. Final meters conversion for TSDF integration (Zero-copy GPU path)

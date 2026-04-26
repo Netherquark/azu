@@ -175,9 +175,9 @@ void SignalConditioner::processCpu(RawFrame& raw, float min_depth_m, float max_d
     preprocessRgb(raw.rgb);
     buildSuperResolutionGuidance(raw.rgb);
     denoiseDepthSpatial(raw.depth, min_depth_m, max_depth_m);
-    applyDepthEma(raw.depth, min_depth_m, max_depth_m);
     fillDepthHoles(raw.depth, min_depth_m, max_depth_m);
     guidedDepthFilter(raw.depth, min_depth_m, max_depth_m);
+    applyDepthEma(raw.depth, min_depth_m, max_depth_m);
 }
 
 void SignalConditioner::preprocessRgb(std::vector<uint8_t>& rgb) {
