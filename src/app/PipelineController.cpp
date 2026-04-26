@@ -3,11 +3,13 @@
 #include "export/PLYExporter.h"
 #include "utils/Logger.h"
 #include "utils/Timer.h"
+#include "sensor/SuperResolution.h"
 #include <QCoreApplication>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
+#include <iostream>
 
 #ifdef CUDA_ENABLED
 #include <cuda_runtime.h>
@@ -93,22 +95,10 @@ bool PipelineController::start() {
         tsdf_->setGPUEnabled(false);
         KFLOGF_WARN("Pipeline", "CUDA initialization FAILED: %s. Falling back to CPU mode.", e.what());
     }
-    use_gpu_ = true;
-    tsdf_->setGPUEnabled(true);
-    KFLOG_INFO("Pipeline",
-               "CUDA hardware acceleration ENABLED (NVIDIA GPU detected).");
-  } catch (const std::exception &e) {
-    use_gpu_ = false;
-    cuda_stream_ = nullptr;
-    tsdf_->setGPUEnabled(false);
-    KFLOGF_WARN("Pipeline",
-                "CUDA initialization FAILED: %s. Falling back to CPU mode.",
-                e.what());
-  }
 #else
-  use_gpu_ = false;
-  tsdf_->setGPUEnabled(false);
-  KFLOG_INFO("Pipeline", "Using CPU-only path (CUDA not enabled in build).");
+    use_gpu_ = false;
+    tsdf_->setGPUEnabled(false);
+    KFLOG_INFO("Pipeline", "Using CPU-only path (CUDA not enabled in build).");
 #endif
 
     configurePreprocessor();
@@ -324,90 +314,66 @@ void PipelineController::trackingLoop() {
 
     // Apply Zero-Latency CPU Super-Resolution (CAS)
     // Enhance the raw RGB buffer *before* it's paired with 3D depth meshes
-    // natively
-    sensor::sr::applyCAS(raw->rgb, sensor::FRAME_W, sensor::FRAME_H, 0.85f);
+    sensor::sr::applyCAS(raw->rgb, sensor::RGB_WIDTH, sensor::RGB_HEIGHT, 0.85f);
 
     // Build processed frame here (using pool)
     auto frame = acquireFreeData();
     if (!frame) {
-      KFLOG_WARN("Pipeline", "FrameData pool exhausted — dropping raw frame "
-                             "(increase pool or slow capture)");
-      sensor_->releaseFrame(std::move(raw)); // Don't forget to recycle raw
-      continue;
+        KFLOG_WARN("Pipeline", "FrameData pool exhausted — dropping raw frame (increase pool or slow capture)");
+        sensor_->releaseFrame(std::move(raw)); // Don't forget to recycle raw
+        continue;
     }
-
+    
     frame->frame_id = raw->frame_id;
     float d_min = 0.3f, d_max = 5.0f;
     {
-      std::lock_guard<std::mutex> lk(hyper_mutex_);
-      d_min = hyperparams_.min_depth;
-      d_max = hyperparams_.max_depth;
+        std::lock_guard<std::mutex> lk(hyper_mutex_);
+        d_min = hyperparams_.min_depth;
+        d_max = hyperparams_.max_depth;
     }
-    sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame, d_min,
-                           d_max);
 
+    if (preprocessor_) {
+        preprocessor_->process(*raw, d_min, d_max);
+    }
+    sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame, d_min, d_max);
+    sensor::computeNormals(*frame);
+    
     // We can release 'raw' immediately after buildFrameData copies it
     sensor_->releaseFrame(std::move(raw));
 
-        // Build processed frame here (using pool)
-        auto frame = acquireFreeData();
-        if (!frame) {
-            KFLOG_WARN("Pipeline", "FrameData pool exhausted — dropping raw frame (increase pool or slow capture)");
-            sensor_->releaseFrame(std::move(raw)); // Don't forget to recycle raw
-            continue;
+    // Notify UI (throttled, safe shared_ptr copy)
+    if (frame_ready_cb_) {
+        if (++ui_skip_counter_ % 3 == 0) {
+            auto frame_ui = frame; // shared_ptr copy, cheap
+            QMetaObject::invokeMethod(
+                qApp, [this, frame_ui]() {
+                    if (frame_ready_cb_) frame_ready_cb_(*frame_ui);
+                }, Qt::QueuedConnection);
         }
-        
-        frame->frame_id = raw->frame_id;
-        float d_min = 0.3f, d_max = 5.0f;
+    }
+
+    // First frame: initialize pose; skip tracking
+    if (first_frame_) {
+        first_frame_ = false;
+        frame->pose = Eigen::Matrix4f::Identity();
+        // Enqueue for integration
         {
-            std::lock_guard<std::mutex> lk(hyper_mutex_);
-            d_min = hyperparams_.min_depth;
-            d_max = hyperparams_.max_depth;
+            std::lock_guard<std::mutex> lk(integration_queue_mutex_);
+            if (integration_queue_.size() < 3)
+                integration_queue_.push(frame);
+            else
+                releaseData(std::move(frame));
         }
-        if (preprocessor_) {
-            preprocessor_->process(*raw, d_min, d_max);
-        }
-        sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame, d_min, d_max);
-        sensor::computeNormals(*frame);
-        
-        // We can release 'raw' immediately after buildFrameData copies it
-        sensor_->releaseFrame(std::move(raw));
+        integration_queue_cv_.notify_one();
 
-        // Notify UI (throttled, safe shared_ptr copy)
-        if (frame_ready_cb_) {
-            // ui_skip_counter_ is a member variable (not a static local) to
-            // avoid UB data races if the tracking thread is ever restarted.
-            if (++ui_skip_counter_ % 3 == 0) {
-                auto frame_ui = frame; // shared_ptr copy, cheap
-                QMetaObject::invokeMethod(
-                    qApp, [this, frame_ui]() {
-                        if (frame_ready_cb_) frame_ready_cb_(*frame_ui);
-                    }, Qt::QueuedConnection);
-            }
+        {
+            std::lock_guard<std::mutex> lk(metrics_mutex_);
+            metrics_.tracking_ok = true;
+            metrics_.icp_error   = 0.0f;
         }
-
-        // First frame: initialize pose; skip tracking
-        if (first_frame_) {
-            first_frame_ = false;
-            frame->pose = Eigen::Matrix4f::Identity();
-            // Enqueue for integration
-            {
-                std::lock_guard<std::mutex> lk(integration_queue_mutex_);
-                if (integration_queue_.size() < 3)
-                    integration_queue_.push(frame);
-                else
-                    releaseData(std::move(frame));
-            }
-            integration_queue_cv_.notify_one();
-
-            {
-                std::lock_guard<std::mutex> lk(metrics_mutex_);
-                metrics_.tracking_ok = true;
-                metrics_.icp_error   = 0.0f;
-            }
-            KFLOGF_INFO("Pipeline", "First frame accepted (ID: %d). Initializing world origin.", frame->frame_id);
-            continue;
-        }
+        KFLOGF_INFO("Pipeline", "First frame accepted (ID: %lu). Initializing world origin.", frame->frame_id);
+        continue;
+    }
 
     // Build pyramid for ICP
     sensor::FramePyramid pyramid;
@@ -529,7 +495,6 @@ void PipelineController::trackingLoop() {
             releaseData(std::move(frame));
         }
     }
-  }
 }
 
 void PipelineController::integrationLoop() {

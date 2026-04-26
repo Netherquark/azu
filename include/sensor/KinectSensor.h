@@ -8,11 +8,13 @@
 #include <memory>
 #include <functional>
 
+struct _freenect_context;
+typedef struct _freenect_context freenect_context;
+struct _freenect_device;
+typedef struct _freenect_device freenect_device;
+
 namespace kfusion {
 namespace sensor {
-
-struct freenect_context;
-struct freenect_device;
 
 // Raw Kinect v1 depth/rgb frame dimensions
 static constexpr int DEPTH_WIDTH  = 640;
