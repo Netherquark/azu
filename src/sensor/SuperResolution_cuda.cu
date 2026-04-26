@@ -56,37 +56,45 @@ __global__ void applyCASKernel(const uint8_t* d_in, uint8_t* d_out, int width, i
     }
 }
 
-// Global cached device pointers for pipeline consistency (no cudaMalloc in hot path)
-static uint8_t* d_rgb_in = nullptr;
-static uint8_t* d_rgb_out = nullptr;
-static size_t d_rgb_size = 0;
+struct CudaBufferRAII {
+    uint8_t* d_in = nullptr;
+    uint8_t* d_out = nullptr;
+    size_t size = 0;
+    ~CudaBufferRAII() {
+        if (d_in) cudaFree(d_in);
+        if (d_out) cudaFree(d_out);
+    }
+    void resize(size_t req_size) {
+        if (size != req_size) {
+            if (d_in) cudaFree(d_in);
+            if (d_out) cudaFree(d_out);
+            cudaMalloc(&d_in, req_size);
+            cudaMalloc(&d_out, req_size);
+            size = req_size;
+        }
+    }
+};
 
 void applyCAS_GPU(std::vector<uint8_t>& rgb, int width, int height, float sharpness) {
     if (rgb.empty() || width <= 0 || height <= 0) return;
     
     size_t req_size = width * height * 3;
-    // Handle dynamic resizing or first-time allocation
-    if (d_rgb_size != req_size) {
-        if (d_rgb_in) cudaFree(d_rgb_in);
-        if (d_rgb_out) cudaFree(d_rgb_out);
-        cudaMalloc(&d_rgb_in, req_size);
-        cudaMalloc(&d_rgb_out, req_size);
-        d_rgb_size = req_size;
-    }
+    static thread_local CudaBufferRAII buffers;
+    buffers.resize(req_size);
 
     float t = std::max(0.0f, std::min(sharpness, 1.0f));
     float peak = -1.0f / ((1.0f - t) * 8.0f + t * 5.0f);
 
     // Async block
-    cudaMemcpy(d_rgb_in, rgb.data(), req_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(buffers.d_in, rgb.data(), req_size, cudaMemcpyHostToDevice);
 
     dim3 block(16, 16);
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
-    applyCASKernel<<<grid, block>>>(d_rgb_in, d_rgb_out, width, height, peak);
+    applyCASKernel<<<grid, block>>>(buffers.d_in, buffers.d_out, width, height, peak);
     cudaDeviceSynchronize();
 
-    cudaMemcpy(rgb.data(), d_rgb_out, req_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(rgb.data(), buffers.d_out, req_size, cudaMemcpyDeviceToHost);
 }
 
 } // namespace sr

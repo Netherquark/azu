@@ -342,11 +342,11 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
     ICPResult result;
     result.pose = pose_estimate;
 
-    // Intrinsics
-    float fx = kfusion::sensor::FX / (1 << level);
-    float fy = kfusion::sensor::FY / (1 << level);
-    float cx = kfusion::sensor::CX / (1 << level);
-    float cy = kfusion::sensor::CY / (1 << level);
+    // Intrinsics for projecting into the MODEL frame (which is always full resolution)
+    float fx = kfusion::sensor::FX;
+    float fy = kfusion::sensor::FY;
+    float cx = kfusion::sensor::CX;
+    float cy = kfusion::sensor::CY;
 
     float angle_thresh_cos = cosf(params_.angle_threshold * 3.14159f / 180.0f);
 

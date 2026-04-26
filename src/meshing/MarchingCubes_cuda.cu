@@ -547,7 +547,7 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
     CUDA_CHECK(cudaMemcpy(&last_count, d_voxel_tri_counts_.get() + n - 1, 4, cudaMemcpyDeviceToHost));
     total_tris += last_count;
     
-    CUDA_CHECK(cudaMemcpy(d_voxel_offsets_.get() + n, &total_tris, 4, cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(d_voxel_offsets_.get() + n, &total_tris, 4, cudaMemcpyHostToDevice));
 
     std::shared_ptr<MeshData> mesh = std::make_shared<MeshData>();
     if (total_tris > 0) {

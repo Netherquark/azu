@@ -184,6 +184,7 @@ void TSDFVolume::integrateGPU(const float*           d_depth,
         t_wc.x(), t_wc.y(), t_wc.z()
     );
     CUDA_CHECK_LAST();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 __device__ float get_tsdf_trilinear(VoxelGPU* voxels, int resolution, float voxel_size, float3 origin, float3 p) {
@@ -282,39 +283,41 @@ __global__ void raycastKernel(
     float3 pos_w = make_float3(tx, ty, tz);
     float t = 0.3f; // min depth for Kinect v1
     float prev_tsdf = 1.0f;
+    float step = voxel_size;
 
     while (t < 5.0f) {
         float3 p = make_float3(pos_w.x + ray_w.x * t, pos_w.y + ray_w.y * t, pos_w.z + ray_w.z * t);
         float tsdf = get_tsdf_trilinear(voxels, resolution, voxel_size, origin, p);
 
-        if (tsdf < 1.0f) { // Probable geometry region
-            if (prev_tsdf > 0.0f && tsdf <= 0.0f) {
-                // Surface zero-crossing found
-                float t_hit = t - voxel_size * tsdf / (tsdf - prev_tsdf + 1e-6f);
-                float3 pf = make_float3(pos_w.x + ray_w.x * t_hit, pos_w.y + ray_w.y * t_hit, pos_w.z + ray_w.z * t_hit);
+        if (prev_tsdf > 0.0f && tsdf <= 0.0f) {
+            // Surface zero-crossing found
+            float t_hit = t - step * tsdf / (tsdf - prev_tsdf + 1e-6f);
+            float3 pf = make_float3(pos_w.x + ray_w.x * t_hit, pos_w.y + ray_w.y * t_hit, pos_w.z + ray_w.z * t_hit);
 
-                
-                out_v[py * width + px] = pf;
-                out_n[py * width + px] = computeNormalGPU(voxels_void, resolution, voxel_size, origin, pf);
+            
+            out_v[py * width + px] = pf;
+            out_n[py * width + px] = computeNormalGPU(voxels_void, resolution, voxel_size, origin, pf);
 
-                if (out_c) {
-                    int vx = __float2int_rd((pf.x - origin.x) / voxel_size);
-                    int vy = __float2int_rd((pf.y - origin.y) / voxel_size);
-                    int vz = __float2int_rd((pf.z - origin.z) / voxel_size);
-                    if (vx >= 0 && vx < resolution && vy >= 0 && vy < resolution && vz >= 0 && vz < resolution) {
-                        VoxelGPU& v = voxels[vz * resolution * resolution + vy * resolution + vx];
-                        out_c[py * width + px] = make_uchar3((uint8_t)v.r, (uint8_t)v.g, (uint8_t)v.b);
-                    }
+            if (out_c) {
+                int vx = __float2int_rd((pf.x - origin.x) / voxel_size);
+                int vy = __float2int_rd((pf.y - origin.y) / voxel_size);
+                int vz = __float2int_rd((pf.z - origin.z) / voxel_size);
+                if (vx >= 0 && vx < resolution && vy >= 0 && vy < resolution && vz >= 0 && vz < resolution) {
+                    VoxelGPU& v = voxels[vz * resolution * resolution + vy * resolution + vx];
+                    out_c[py * width + px] = make_uchar3((uint8_t)v.r, (uint8_t)v.g, (uint8_t)v.b);
                 }
-                return;
             }
-            prev_tsdf = tsdf;
-            t += voxel_size * 0.5f; // Small steps near surface
+            return;
+        }
+
+        prev_tsdf = tsdf;
+        if (tsdf < 1.0f) { // Probable geometry region
+            step = voxel_size * 0.5f; // Small steps near surface
         } else {
             // Unknown or empty space
-            t += voxel_size; 
-            prev_tsdf = 1.0f;
+            step = voxel_size; 
         }
+        t += step;
     }
     
     out_v[py * width + px] = make_float3(0,0,0);

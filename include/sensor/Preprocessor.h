@@ -55,8 +55,20 @@ public:
     void process(RawFrame& frame, float min_depth_m, float max_depth_m) override;
     PreprocessBackend backend() const override { return PreprocessBackend::CUDA; }
 
-    float*   getGPUDepthMeters() const override { return conditioner_.getGPUDepthMeters(); }
-    uint8_t* getGPURgb()         const override { return conditioner_.getGPURgb(); }
+    float*   getGPUDepthMeters() const override { 
+#ifdef CUDA_ENABLED
+        return conditioner_.getGPUDepthMeters(); 
+#else
+        return nullptr;
+#endif
+    }
+    uint8_t* getGPURgb()         const override { 
+#ifdef CUDA_ENABLED
+        return conditioner_.getGPURgb(); 
+#else
+        return nullptr;
+#endif
+    }
 
 private:
     cudaStream_t stream_ = nullptr;

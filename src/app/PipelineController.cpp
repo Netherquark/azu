@@ -555,9 +555,9 @@ void PipelineController::integrationLoop() {
       std::unique_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
 #ifdef CUDA_ENABLED
       if (use_gpu_.load()) {
-          tsdf_->integrateGPU(
-              preprocessor_->getGPUDepthMeters(),
-              preprocessor_->getGPURgb(),
+          tsdf_->integrate(
+              frame->depth_meters.data(),
+              frame->rgb.data(),
               frame->pose,
               static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
               static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),

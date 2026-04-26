@@ -145,6 +145,10 @@ private:
     mutable utils::CudaUniquePtr<float3> d_pc_out_points_;
     mutable utils::CudaUniquePtr<uchar3> d_pc_out_colors_;
     
+    // Cached buffers for safe thread-decoupled integration
+    mutable utils::CudaUniquePtr<float> d_depth_integ_;
+    mutable utils::CudaUniquePtr<uint8_t> d_rgb_integ_;
+    
     bool    gpu_valid_ = false;
 #endif
     bool    gpu_enabled_ = false;

@@ -157,13 +157,13 @@ private:
             // The buffer we just finished writing (back_idx) becomes the new ready_idx.
             // The old ready_idx becomes the new back_idx, provided it's not being read.
             // If it IS being read, we must use the third buffer.
-            int old_ready = ready_idx;
-            ready_idx = back_idx;
+            int old_ready = ready_idx.load();
+            ready_idx.store(back_idx.load());
             
             // Find a buffer that is neither the new ready nor the current front
             for (int i = 0; i < 3; ++i) {
-                if (i != ready_idx && i != front_idx) {
-                    back_idx = i;
+                if (i != ready_idx.load() && i != front_idx.load()) {
+                    back_idx.store(i);
                     break;
                 }
             }
@@ -171,8 +171,8 @@ private:
 
         int acquireFront() {
             std::lock_guard<std::mutex> lk(mtx);
-            front_idx = ready_idx;
-            return front_idx;
+            front_idx.store(ready_idx.load());
+            return front_idx.load();
         }
     } model_buffers_;
 
