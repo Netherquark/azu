@@ -10,6 +10,7 @@ class QSpinBox;
 class QDoubleSpinBox;
 class QLabel;
 class QSlider;
+class QGroupBox;
 QT_END_NAMESPACE
 
 namespace kfusion {
@@ -39,6 +40,7 @@ public slots:
     void onPipelineStopped();
     void setExportEnabled(bool enabled);
     void setCameraRotation(int pitch, int yaw, int roll);
+    void onPresetChanged(int index);
 
 private:
     QPushButton* btn_start_  = nullptr;
@@ -49,6 +51,9 @@ private:
     QComboBox*   combo_mode_ = nullptr;
     QSpinBox*    spin_threads_ = nullptr;
     QLabel*      lbl_status_ = nullptr;
+    QComboBox*   combo_presets_ = nullptr;
+    QPushButton* btn_toggle_hp_ = nullptr;
+    QGroupBox*   grp_hp_ = nullptr;
 
     QSlider*     slider_x_ = nullptr;
     QSlider*     slider_y_ = nullptr;

@@ -50,6 +50,7 @@ void ControlPanel::setupUI() {
     line->setFrameShadow(QFrame::Sunken);
     root->addWidget(line);
 
+    // 1. Capture Group
     auto* grp_capture = new QGroupBox("Capture", this);
     auto* v_cap = new QVBoxLayout(grp_capture);
     btn_start_ = new QPushButton("▶  Start Capture", this);
@@ -72,79 +73,7 @@ void ControlPanel::setupUI() {
     inner_layout->setSpacing(10);
     inner_layout->setContentsMargins(0, 0, 6, 0);
 
-    auto* grp_hp = new QGroupBox("Hyperparameters (Apply)", inner);
-    auto* g = new QGridLayout(grp_hp);
-    int r = 0;
-
-    g->addWidget(new QLabel("Depth min (m)", grp_hp), r, 0);
-    spin_depth_min_ = makeDoubleSpin(0.01, 3.0, 0.01, 0.05, 3, grp_hp);
-    g->addWidget(spin_depth_min_, r++, 1);
-
-    g->addWidget(new QLabel("Depth max (m)", grp_hp), r, 0);
-    spin_depth_max_ = makeDoubleSpin(0.2, 12.0, 0.1, 8.0, 2, grp_hp);
-    g->addWidget(spin_depth_max_, r++, 1);
-
-    g->addWidget(new QLabel("Voxel size (m)", grp_hp), r, 0);
-    spin_voxel_ = makeDoubleSpin(0.003, 0.05, 0.001, 0.01, 3, grp_hp);
-    g->addWidget(spin_voxel_, r++, 1);
-
-    g->addWidget(new QLabel("Truncation (m)", grp_hp), r, 0);
-    spin_trunc_ = makeDoubleSpin(0.01, 0.25, 0.005, 0.03, 3, grp_hp);
-    g->addWidget(spin_trunc_, r++, 1);
-
-    g->addWidget(new QLabel("Max weight", grp_hp), r, 0);
-    spin_max_weight_ = makeDoubleSpin(1.0, 512.0, 1.0, 128.0, 0, grp_hp);
-    g->addWidget(spin_max_weight_, r++, 1);
-
-    g->addWidget(new QLabel("Resolution (³)", grp_hp), r, 0);
-    spin_resolution_ = new QSpinBox(grp_hp);
-    spin_resolution_->setRange(64, 512);
-    spin_resolution_->setSingleStep(32);
-    spin_resolution_->setValue(256);
-    g->addWidget(spin_resolution_, r++, 1);
-
-    g->addWidget(new QLabel("Origin X", grp_hp), r, 0);
-    spin_origin_x_ = makeDoubleSpin(-4.0, 4.0, 0.05, -1.28, 2, grp_hp);
-    g->addWidget(spin_origin_x_, r++, 1);
-    g->addWidget(new QLabel("Origin Y", grp_hp), r, 0);
-    spin_origin_y_ = makeDoubleSpin(-4.0, 4.0, 0.05, -1.28, 2, grp_hp);
-    g->addWidget(spin_origin_y_, r++, 1);
-    g->addWidget(new QLabel("Origin Z", grp_hp), r, 0);
-    spin_origin_z_ = makeDoubleSpin(-2.0, 4.0, 0.05, 0.0, 2, grp_hp);
-    g->addWidget(spin_origin_z_, r++, 1);
-
-    g->addWidget(new QLabel("ICP dist (m)", grp_hp), r, 0);
-    spin_icp_dist_ = makeDoubleSpin(0.02, 0.5, 0.01, 0.1, 3, grp_hp);
-    g->addWidget(spin_icp_dist_, r++, 1);
-
-    g->addWidget(new QLabel("ICP angle (°)", grp_hp), r, 0);
-    spin_icp_angle_ = makeDoubleSpin(5.0, 90.0, 1.0, 30.0, 0, grp_hp);
-    g->addWidget(spin_icp_angle_, r++, 1);
-
-    g->addWidget(new QLabel("ICP iters coarse", grp_hp), r, 0);
-    spin_icp_it2_ = new QSpinBox(grp_hp);
-    spin_icp_it2_->setRange(1, 40);
-    spin_icp_it2_->setValue(10);
-    g->addWidget(spin_icp_it2_, r++, 1);
-
-    g->addWidget(new QLabel("ICP iters mid", grp_hp), r, 0);
-    spin_icp_it1_ = new QSpinBox(grp_hp);
-    spin_icp_it1_->setRange(1, 40);
-    spin_icp_it1_->setValue(5);
-    g->addWidget(spin_icp_it1_, r++, 1);
-
-    g->addWidget(new QLabel("ICP iters fine", grp_hp), r, 0);
-    spin_icp_it0_ = new QSpinBox(grp_hp);
-    spin_icp_it0_->setRange(1, 40);
-    spin_icp_it0_->setValue(4);
-    g->addWidget(spin_icp_it0_, r++, 1);
-
-    btn_apply_hyper_ = new QPushButton("Apply hyperparameters", grp_hp);
-    btn_apply_hyper_->setProperty("class", "ActionBtn");
-    g->addWidget(btn_apply_hyper_, r++, 0, 1, 2);
-
-    inner_layout->addWidget(grp_hp);
-
+    // 2. Preview Mode
     auto* grp_mode = new QGroupBox("Preview Mode", inner);
     auto* v_mode = new QVBoxLayout(grp_mode);
     combo_mode_ = new QComboBox(grp_mode);
@@ -153,6 +82,7 @@ void ControlPanel::setupUI() {
     v_mode->addWidget(combo_mode_);
     inner_layout->addWidget(grp_mode);
 
+    // 3. Camera Controls
     auto* grp_cam = new QGroupBox("Camera Controls (XYZ Rotation)", inner);
     auto* h_cam = new QVBoxLayout(grp_cam);
     
@@ -179,6 +109,7 @@ void ControlPanel::setupUI() {
     
     inner_layout->addWidget(grp_cam);
 
+    // 4. Export
     auto* grp_export = new QGroupBox("Export", inner);
     auto* v_exp = new QVBoxLayout(grp_export);
     btn_ply_ = new QPushButton("Export PLY", grp_export);
@@ -191,6 +122,7 @@ void ControlPanel::setupUI() {
     v_exp->addWidget(btn_glb_);
     inner_layout->addWidget(grp_export);
 
+    // 5. Threads
     auto* thread_layout = new QHBoxLayout();
     thread_layout->addWidget(new QLabel("Threads (0=Auto):"));
     spin_threads_ = new QSpinBox(inner);
@@ -198,6 +130,98 @@ void ControlPanel::setupUI() {
     spin_threads_->setValue(0);
     thread_layout->addWidget(spin_threads_);
     inner_layout->addLayout(thread_layout);
+
+    // 6. Presets
+    auto* grp_presets = new QGroupBox("Scanning Presets", inner);
+    auto* v_pre = new QVBoxLayout(grp_presets);
+    combo_presets_ = new QComboBox(grp_presets);
+    combo_presets_->addItem("Custom / Current");
+    combo_presets_->addItem("Helmet (Small, High Detail)");
+    combo_presets_->addItem("Chair (Medium, Standard)");
+    combo_presets_->addItem("Room (Large Environment)");
+    combo_presets_->addItem("Human (Detail, Low Weight)");
+    v_pre->addWidget(combo_presets_);
+    inner_layout->addWidget(grp_presets);
+
+    // 7. Toggle for Advanced
+    btn_toggle_hp_ = new QPushButton("⚙  Show Advanced Configuration", inner);
+    btn_toggle_hp_->setCheckable(true);
+    inner_layout->addWidget(btn_toggle_hp_);
+
+    // 8. Advanced Hyperparameters (Collapsed)
+    grp_hp_ = new QGroupBox("Hyperparameters (Apply)", inner);
+    auto* g = new QGridLayout(grp_hp_);
+    int r = 0;
+
+    g->addWidget(new QLabel("Depth min (m)", grp_hp_), r, 0);
+    spin_depth_min_ = makeDoubleSpin(0.01, 3.0, 0.01, 0.05, 3, grp_hp_);
+    g->addWidget(spin_depth_min_, r++, 1);
+
+    g->addWidget(new QLabel("Depth max (m)", grp_hp_), r, 0);
+    spin_depth_max_ = makeDoubleSpin(0.2, 12.0, 0.1, 8.0, 2, grp_hp_);
+    g->addWidget(spin_depth_max_, r++, 1);
+
+    g->addWidget(new QLabel("Voxel size (m)", grp_hp_), r, 0);
+    spin_voxel_ = makeDoubleSpin(0.003, 0.05, 0.001, 0.01, 3, grp_hp_);
+    g->addWidget(spin_voxel_, r++, 1);
+
+    g->addWidget(new QLabel("Truncation (m)", grp_hp_), r, 0);
+    spin_trunc_ = makeDoubleSpin(0.01, 0.25, 0.005, 0.03, 3, grp_hp_);
+    g->addWidget(spin_trunc_, r++, 1);
+
+    g->addWidget(new QLabel("Max weight", grp_hp_), r, 0);
+    spin_max_weight_ = makeDoubleSpin(1.0, 512.0, 1.0, 128.0, 0, grp_hp_);
+    g->addWidget(spin_max_weight_, r++, 1);
+
+    g->addWidget(new QLabel("Resolution (³)", grp_hp_), r, 0);
+    spin_resolution_ = new QSpinBox(grp_hp_);
+    spin_resolution_->setRange(64, 512);
+    spin_resolution_->setSingleStep(32);
+    spin_resolution_->setValue(256);
+    g->addWidget(spin_resolution_, r++, 1);
+
+    g->addWidget(new QLabel("Origin X", grp_hp_), r, 0);
+    spin_origin_x_ = makeDoubleSpin(-4.0, 4.0, 0.05, -1.28, 2, grp_hp_);
+    g->addWidget(spin_origin_x_, r++, 1);
+    g->addWidget(new QLabel("Origin Y", grp_hp_), r, 0);
+    spin_origin_y_ = makeDoubleSpin(-4.0, 4.0, 0.05, -1.28, 2, grp_hp_);
+    g->addWidget(spin_origin_y_, r++, 1);
+    g->addWidget(new QLabel("Origin Z", grp_hp_), r, 0);
+    spin_origin_z_ = makeDoubleSpin(-2.0, 4.0, 0.05, 0.0, 2, grp_hp_);
+    g->addWidget(spin_origin_z_, r++, 1);
+
+    g->addWidget(new QLabel("ICP dist (m)", grp_hp_), r, 0);
+    spin_icp_dist_ = makeDoubleSpin(0.02, 0.5, 0.01, 0.1, 3, grp_hp_);
+    g->addWidget(spin_icp_dist_, r++, 1);
+
+    g->addWidget(new QLabel("ICP angle (°)", grp_hp_), r, 0);
+    spin_icp_angle_ = makeDoubleSpin(5.0, 90.0, 1.0, 30.0, 0, grp_hp_);
+    g->addWidget(spin_icp_angle_, r++, 1);
+
+    g->addWidget(new QLabel("ICP iters coarse", grp_hp_), r, 0);
+    spin_icp_it2_ = new QSpinBox(grp_hp_);
+    spin_icp_it2_->setRange(1, 40);
+    spin_icp_it2_->setValue(10);
+    g->addWidget(spin_icp_it2_, r++, 1);
+
+    g->addWidget(new QLabel("ICP iters mid", grp_hp_), r, 0);
+    spin_icp_it1_ = new QSpinBox(grp_hp_);
+    spin_icp_it1_->setRange(1, 40);
+    spin_icp_it1_->setValue(5);
+    g->addWidget(spin_icp_it1_, r++, 1);
+
+    g->addWidget(new QLabel("ICP iters fine", grp_hp_), r, 0);
+    spin_icp_it0_ = new QSpinBox(grp_hp_);
+    spin_icp_it0_->setRange(1, 40);
+    spin_icp_it0_->setValue(4);
+    g->addWidget(spin_icp_it0_, r++, 1);
+
+    btn_apply_hyper_ = new QPushButton("Apply hyperparameters", grp_hp_);
+    btn_apply_hyper_->setProperty("class", "ActionBtn");
+    g->addWidget(btn_apply_hyper_, r++, 0, 1, 2);
+
+    grp_hp_->setVisible(false);
+    inner_layout->addWidget(grp_hp_);
 
     inner_layout->addStretch();
     scroll->setWidget(inner);
@@ -218,6 +242,14 @@ void ControlPanel::connectSignals() {
     connect(spin_threads_, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &ControlPanel::threadsChanged);
     connect(btn_apply_hyper_, &QPushButton::clicked, this, &ControlPanel::hyperparamsApplyClicked);
+
+    connect(combo_presets_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ControlPanel::onPresetChanged);
+
+    connect(btn_toggle_hp_, &QPushButton::toggled, this, [this](bool checked) {
+        grp_hp_->setVisible(checked);
+        btn_toggle_hp_->setText(checked ? "⚙  Hide Advanced Configuration" : "⚙  Show Advanced Configuration");
+    });
 
     auto emitCameraRotation = [this]() {
         emit cameraRotationChanged(slider_x_->value(), slider_y_->value(), slider_z_->value());
@@ -305,6 +337,43 @@ void ControlPanel::setCameraRotation(int pitch, int yaw, int roll) {
     slider_x_->blockSignals(false);
     slider_y_->blockSignals(false);
     slider_z_->blockSignals(false);
+}
+
+void ControlPanel::onPresetChanged(int index) {
+    if (index == 0) return; // Custom
+
+    app::FusionHyperparams h = hyperparamsFromUi();
+
+    if (index == 1) { // Helmet
+        h.tsdf.voxel_size = 0.003f;
+        h.tsdf.resolution = 512;
+        h.tsdf.truncation = 0.010f;
+        h.max_depth = 1.5f;
+        h.icp.dist_threshold = 0.05f;
+    } else if (index == 2) { // Chair
+        h.tsdf.voxel_size = 0.008f;
+        h.tsdf.resolution = 256;
+        h.tsdf.truncation = 0.025f;
+        h.max_depth = 3.0f;
+    } else if (index == 3) { // Room
+        h.tsdf.voxel_size = 0.030f;
+        h.tsdf.resolution = 256;
+        h.tsdf.truncation = 0.100f;
+        h.icp.dist_threshold = 0.20f;
+        h.max_depth = 8.0f;
+    } else if (index == 4) { // Human
+        h.tsdf.voxel_size = 0.005f;
+        h.tsdf.resolution = 256;
+        h.tsdf.max_weight = 64.0f;
+        h.tsdf.truncation = 0.015f;
+        h.min_depth = 0.5f;
+        h.max_depth = 2.5f;
+    }
+
+    setHyperparams(h);
+    // Automatically apply when preset is chosen? 
+    // Usually better to let user review, but "apply" is often expected from presets.
+    // However, the user didn't ask for auto-apply, so I'll just set the UI values.
 }
 
 } // namespace gui

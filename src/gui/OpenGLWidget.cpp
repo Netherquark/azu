@@ -88,7 +88,6 @@ void OpenGLWidget::mousePressEvent(QMouseEvent* e) {
 
 void OpenGLWidget::mouseMoveEvent(QMouseEvent* e) {
     if (!mouse_pressed_ || !renderer_) return;
-    if (renderer_->mode() == rendering::RenderMode::PointCloud) return;
 
     QPoint delta = e->pos() - last_mouse_pos_;
     last_mouse_pos_ = e->pos();
@@ -131,7 +130,6 @@ void OpenGLWidget::mouseMoveEvent(QMouseEvent* e) {
 
 void OpenGLWidget::wheelEvent(QWheelEvent* e) {
     if (!renderer_) return;
-    if (renderer_->mode() == rendering::RenderMode::PointCloud) return;
     float delta = static_cast<float>(e->angleDelta().y()) / 120.0f;
     renderer_->camera().zoom(delta);
     update();

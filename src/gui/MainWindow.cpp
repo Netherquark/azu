@@ -141,6 +141,7 @@ void MainWindow::onResetClicked() {
     pipeline_->reset();
 
     if (gl_widget_) gl_widget_->clearGeometry();
+    control_panel_->setExportEnabled(false);
 
     if (was_capturing) {
         if (!pipeline_->start()) {
@@ -212,6 +213,7 @@ void MainWindow::onMeshReady() {
 
     if (gl_widget_ && mesh) {
         gl_widget_->updateMesh(*mesh);
+        control_panel_->setExportEnabled(true);
     }
 
 }
