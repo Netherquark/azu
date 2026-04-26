@@ -55,6 +55,10 @@ endif()
 
 # ---- Dependency Resolution ----
 
+# PkgConfig must be loaded first — pkg_check_modules is used by both the Qt5
+# fallback path and libfreenect detection below.
+find_package(PkgConfig REQUIRED)
+
 # Qt5 - Try system paths first, then common Fedora/RHEL paths
 list(APPEND CMAKE_PREFIX_PATH "/usr/lib64/cmake/Qt5" "/usr/lib/cmake/Qt5")
 find_package(Qt5 QUIET COMPONENTS Widgets OpenGL)
@@ -75,7 +79,6 @@ set(CMAKE_AUTORCC ON)
 # Note: We use explicit qt5_wrap_cpp below for specific GUI headers to manage complex include paths.
 
 # libfreenect (Kinect v1)
-find_package(PkgConfig REQUIRED)
 pkg_check_modules(FREENECT REQUIRED libfreenect)
 
 # OpenGL

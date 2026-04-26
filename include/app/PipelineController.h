@@ -132,6 +132,12 @@ private:
     int                                   frame_count_    = 0;
     bool                                  first_frame_    = true;
 
+    // Per-instance log throttle counters — replaces static locals in worker threads
+    // to avoid UB data races when threads are stopped and restarted.
+    int                                   ui_skip_counter_      = 0;
+    int                                   lost_log_counter_     = 0;
+    int                                   success_log_counter_  = 0;
+
     // Tracking model frame (double-buffered PingPong)
     struct PingPongModel {
         std::shared_ptr<tracking::ModelFrame> buffers[2];

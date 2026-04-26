@@ -192,8 +192,11 @@ void PipelineController::stop() {
 }
 
 void PipelineController::reset() {
-    // Note: stop() already has control_mutex_, so we don't lock here yet
-    // to avoid deadlock, but we ensure reset is sequential.
+    // stop() acquires and releases control_mutex_ internally.
+    // There is an intentional TOCTOU window between stop() returning and the
+    // re-lock below where another thread could call start(). This is acceptable
+    // because the UI is expected to serialize control operations. If concurrent
+    // control is ever needed, merge stop() body inline here under one lock.
     stop();
     std::lock_guard<std::mutex> ctrl_lk(control_mutex_);
 
@@ -307,8 +310,9 @@ void PipelineController::trackingLoop() {
 
         // Notify UI (throttled, safe shared_ptr copy)
         if (frame_ready_cb_) {
-            static int ui_skip = 0;
-            if (++ui_skip % 3 == 0) {
+            // ui_skip_counter_ is a member variable (not a static local) to
+            // avoid UB data races if the tracking thread is ever restarted.
+            if (++ui_skip_counter_ % 3 == 0) {
                 auto frame_ui = frame; // shared_ptr copy, cheap
                 QMetaObject::invokeMethod(
                     qApp, [this, frame_ui]() {
@@ -411,8 +415,8 @@ void PipelineController::trackingLoop() {
         }
 
         if (!icp_result.tracking_ok) {
-            static int lost_log = 0;
-            if (++lost_log % 30 == 1) {
+            // lost_log_counter_ is a member (not static local) to avoid UB on thread restart.
+            if (++lost_log_counter_ % 30 == 1) {
                 const char* advice = "Move device slowly or improve scene geometry.";
                 if (icp_result.inliers < 1000) advice = "Insufficient geometry overlap (point the sensor at a known surface).";
                 else if (icp_result.error > 1e-3) advice = "High residual error (fast motion or dynamic objects).";
@@ -423,8 +427,8 @@ void PipelineController::trackingLoop() {
                            icp_result.inliers, icp_result.error, icp_result.dist_filtered, advice);
             }
         } else {
-            static int success_log = 0;
-            if (++success_log % 300 == 0) {
+            // success_log_counter_ is a member (not static local) to avoid UB on thread restart.
+            if (++success_log_counter_ % 300 == 0) {
                 KFLOGF_INFO("Pipeline", "Tracking STABLE: avg_inliers=%d, avg_residual=%.6f", 
                            icp_result.inliers, icp_result.error);
             }

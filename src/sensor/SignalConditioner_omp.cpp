@@ -33,7 +33,10 @@ inline float rgbLuma(const uint8_t* rgb) {
 inline uint16_t metersToRawDepth(float depth_m) {
     if (depth_m <= 0.0f) return 0;
     const float raw = (1.0f / depth_m - 3.3309495161f) / -0.0030711016f;
-    return static_cast<uint16_t>(std::clamp(std::lround(raw), 1l, 2046l));
+    // Use explicit long cast to avoid signed/unsigned narrowing on MSVC where
+    // long is 32-bit: std::lround returns long, clamp literals must match.
+    const long clamped = std::clamp(static_cast<long>(std::lround(raw)), 1L, 2046L);
+    return static_cast<uint16_t>(clamped);
 }
 
 inline bool isValidDepthMeters(float d, float min_depth_m, float max_depth_m) {
@@ -112,14 +115,18 @@ void SignalConditioner::preprocessRgb(std::vector<uint8_t>& rgb) {
     const int tiles_x = (FRAME_W + kClaheTileSize - 1) / kClaheTileSize;
     const int tiles_y = (FRAME_H + kClaheTileSize - 1) / kClaheTileSize;
 
+    // Each tile operates on a disjoint region of rgb[], so the collapsed loop
+    // is safe to parallelize. hist/lut/etc. are all declared inside the loop
+    // body and are therefore private to each thread.
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int tile_y = 0; tile_y < tiles_y; ++tile_y) {
-        const int y0 = tile_y * kClaheTileSize;
-        const int y1 = std::min(y0 + kClaheTileSize, FRAME_H);
         for (int tile_x = 0; tile_x < tiles_x; ++tile_x) {
+            const int y0 = tile_y * kClaheTileSize;
+            const int y1 = std::min(y0 + kClaheTileSize, FRAME_H);
             const int x0 = tile_x * kClaheTileSize;
             const int x1 = std::min(x0 + kClaheTileSize, FRAME_W);
             const int tile_pixels = (x1 - x0) * (y1 - y0);
-            const int clip_limit = std::max(1, tile_pixels / 8);
+            const int clip_limit  = std::max(1, tile_pixels / 8);
 
             std::array<int, 256> hist{};
             for (int y = y0; y < y1; ++y) {
@@ -201,6 +208,9 @@ void SignalConditioner::applyDepthEma(std::vector<uint16_t>& depth, float min_de
 }
 
 void SignalConditioner::fillDepthHoles(std::vector<uint16_t>& depth, float min_depth_m, float max_depth_m) {
+    // NOTE: depth_scratch_ is a member variable used as a write-scratch buffer.
+    // This function must only be called from a single thread per SignalConditioner
+    // instance. PipelineController guarantees this via the single trackingLoop thread.
     depth_scratch_ = depth;
 
     #pragma omp parallel for schedule(static)
@@ -248,6 +258,10 @@ void SignalConditioner::fillDepthHoles(std::vector<uint16_t>& depth, float min_d
 }
 
 void SignalConditioner::guidedDepthFilter(std::vector<uint16_t>& depth, float min_depth_m, float max_depth_m) {
+    // PERFORMANCE NOTE: kGuidedRadius=9 produces a 19x19 kernel (~361 samples/pixel).
+    // At 640x480 this is ~110M multiply-adds per frame on the CPU path. If real-time
+    // performance is required, consider reducing kGuidedRadius to 4-5, or replacing
+    // with a separable bilateral approximation.
     depth_scratch_ = depth;
 
     #pragma omp parallel for schedule(static)
