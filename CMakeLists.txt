@@ -146,6 +146,7 @@ set(MOC_HEADERS
     include/gui/OpenGLWidget.h
     include/gui/MetricsPanel.h
     include/gui/ControlPanel.h
+    include/gui/NavigationGizmo.h
 )
 qt5_wrap_cpp(MOC_SOURCES ${MOC_HEADERS}
     TARGET KinectFusionQt

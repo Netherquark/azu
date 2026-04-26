@@ -132,6 +132,7 @@ void KinectSensor::onDepth(void* data, uint32_t timestamp) {
         depth_pending_->frame_id = ++frame_counter_;
 
         if (frame_callback_) {
+            static uint64_t pair_log = 0;
             if (++pair_log % 150 == 0) {
                 KFLOGF_DEBUG("Sensor", "Frames synchronized: ID=%d", depth_pending_->frame_id);
             }

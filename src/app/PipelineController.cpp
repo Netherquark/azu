@@ -5,6 +5,7 @@
 #include "export/GLBExporter.h"
 #include "export/PLYExporter.h"
 #include "utils/Logger.h"
+#include "utils/Timer.h"
 #include "sensor/SuperResolution.h"
 #include <QCoreApplication>
 #include <iostream>

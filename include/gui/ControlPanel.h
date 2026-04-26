@@ -16,6 +16,8 @@ QT_END_NAMESPACE
 namespace kfusion {
 namespace gui {
 
+class NavigationGizmo;
+
 class ControlPanel : public QWidget {
     Q_OBJECT
 public:
@@ -55,9 +57,7 @@ private:
     QPushButton* btn_toggle_hp_ = nullptr;
     QGroupBox*   grp_hp_ = nullptr;
 
-    QSlider*     slider_x_ = nullptr;
-    QSlider*     slider_y_ = nullptr;
-    QSlider*     slider_z_ = nullptr;
+    NavigationGizmo* nav_gizmo_ = nullptr;
 
     QDoubleSpinBox* spin_depth_min_  = nullptr;
     QDoubleSpinBox* spin_depth_max_  = nullptr;
