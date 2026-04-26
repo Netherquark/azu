@@ -23,13 +23,14 @@ ICPTracker::ICPTracker(const ICPParams& params)
 
 ICPResult ICPTracker::track(const sensor::FramePyramid& live,
                             const ModelFrame&           model,
-                            const Eigen::Matrix4f&      prev_pose)
+                            const Eigen::Matrix4f&      pose_estimate,
+                            const Eigen::Matrix4f&      ref_pose)
 {
     ICPResult result;
-    result.pose = prev_pose;
+    result.pose = pose_estimate;
 
     for (int level = sensor::FramePyramid::LEVELS - 1; level >= 0; --level) {
-        result = trackLevel(live.levels[level], model, result.pose, prev_pose, level,
+        result = trackLevel(live.levels[level], model, result.pose, ref_pose, level,
                             params_.max_iterations[level]);
     }
 
@@ -277,7 +278,8 @@ bool ICPTracker::buildLinearSystem(const sensor::FrameData& live,
 #ifdef CUDA_ENABLED
 ICPResult ICPTracker::trackGPU(const sensor::FramePyramid& live,
                                const ModelFrame&           model,
-                               const Eigen::Matrix4f&      pose_estimate)
+                               const Eigen::Matrix4f&      pose_estimate,
+                               const Eigen::Matrix4f&      ref_pose)
 {
     ICPResult result;
     result.pose = pose_estimate;
@@ -298,7 +300,7 @@ ICPResult ICPTracker::trackGPU(const sensor::FramePyramid& live,
         result = trackLevelGPU(
             d_pyramid_v[level].get(), d_pyramid_n[level].get(),
             live.levels[level].width, live.levels[level].height,
-            model, result.pose, pose_estimate, level, params_.max_iterations[level]
+            model, result.pose, ref_pose, level, params_.max_iterations[level]
         );
         if (result.inliers < 100) {
             result.tracking_ok = false;

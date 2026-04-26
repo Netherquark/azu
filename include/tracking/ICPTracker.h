@@ -60,15 +60,16 @@ class ICPTracker {
 public:
     explicit ICPTracker(const ICPParams& params = ICPParams{});
 
-    // Track: given live pyramid + previous model frame    // Track frame against model
     ICPResult track(const sensor::FramePyramid& live,
                     const ModelFrame&           model,
-                    const Eigen::Matrix4f&      pose_estimate);
+                    const Eigen::Matrix4f&      pose_estimate,
+                    const Eigen::Matrix4f&      ref_pose);
 
 #ifdef CUDA_ENABLED
     ICPResult trackGPU(const sensor::FramePyramid& live,
                        const ModelFrame&           model,
-                       const Eigen::Matrix4f&      pose_estimate);
+                       const Eigen::Matrix4f&      pose_estimate,
+                       const Eigen::Matrix4f&      ref_pose);
     void initGPU();
     void freeGPU();
 #endif

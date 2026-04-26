@@ -9,6 +9,22 @@
 #include <cstring>
 #include "tsdf/VoxelGPU.h"
 
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        } \
+    } while(0)
+
+#define CUDA_CHECK_LAST() \
+    do { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        } \
+    } while(0)
+
 namespace kfusion {
 namespace tsdf {
 
@@ -51,6 +67,7 @@ __global__ void integrationKernel_PixelParallel(
     float rx_c = (px - cx) / fx;
     float ry_c = (py - cy) / fy;
     float rz_c = 1.0f;
+    float ray_dist_scale = sqrtf(rx_c*rx_c + ry_c*ry_c + rz_c*rz_c);
 
     // Normalize ray in world space
     float rx_w = rcw00*rx_c + rcw01*ry_c + rcw02*rz_c;
@@ -59,8 +76,9 @@ __global__ void integrationKernel_PixelParallel(
     float inv_len = 1.0f / sqrtf(rx_w*rx_w + ry_w*ry_w + rz_w*rz_w);
     rx_w *= inv_len; ry_w *= inv_len; rz_w *= inv_len;
 
-    float t_min = fmaxf(0.1f, d_meas - truncation);
-    float t_max = d_meas + truncation;
+    float t_meas = d_meas * ray_dist_scale;
+    float t_min = fmaxf(0.1f, t_meas - truncation);
+    float t_max = t_meas + truncation;
     float step  = voxel_size * 0.75f;
 
     // Hoist the Z-projection scale to avoid matrix-vector dot in the loop
@@ -87,28 +105,25 @@ __global__ void integrationKernel_PixelParallel(
         int lidx = vz * resolution * resolution + vy * resolution + vx;
         VoxelGPU& vox = voxels[lidx];
 
-        // Atomic integration with CAS clamp
-        union TSDFPack {
-            struct { float tsdf; float weight; } fields;
-            unsigned long long int as_ull;
-        };
-
-        unsigned long long int* addr = (unsigned long long int*)&vox.tsdf;
-        unsigned long long int old_val = *addr, assumed, new_val;
+        // Separate 32-bit atomic updates for weight and TSDF
         float w_old, w_new;
+        int* addr_weight = (int*)&vox.weight;
+        int old_w_int = *addr_weight, assumed_w_int;
         do {
-            assumed = old_val;
-            TSDFPack pack; pack.as_ull = assumed;
-            w_old = pack.fields.weight;
+            assumed_w_int = old_w_int;
+            w_old = __int_as_float(assumed_w_int);
             w_new = fminf(w_old + 1.0f, max_weight);
-            float t_new = (pack.fields.tsdf * w_old + tsdf_new) / (w_new + 1e-6f);
-            
-            TSDFPack new_pack; 
-            new_pack.fields.tsdf = t_new; 
-            new_pack.fields.weight = w_new;
-            new_val = new_pack.as_ull;
-            old_val = atomicCAS(addr, assumed, new_val);
-        } while (assumed != old_val);
+            old_w_int = atomicCAS(addr_weight, assumed_w_int, __float_as_int(w_new));
+        } while (assumed_w_int != old_w_int);
+
+        int* addr_tsdf = (int*)&vox.tsdf;
+        int old_t_int = *addr_tsdf, assumed_t_int;
+        do {
+            assumed_t_int = old_t_int;
+            float t_old = __int_as_float(assumed_t_int);
+            float t_new = (t_old * w_old + tsdf_new) / (w_new + 1e-6f);
+            old_t_int = atomicCAS(addr_tsdf, assumed_t_int, __float_as_int(t_new));
+        } while (assumed_t_int != old_t_int);
         
         if (rgb) {
             int pidx = py * width + px;
@@ -122,7 +137,9 @@ __global__ void integrationKernel_PixelParallel(
                 do {
                     c_assumed = c_old_val;
                     float c_old = __int_as_float(c_assumed);
-                    float c_new = (c_old * w_old + m) / (w_new + 1e-6f);
+                    float current_w = vox.weight;
+                    float prev_w = fmaxf(0.0f, current_w - 1.0f);
+                    float c_new = (c_old * prev_w + m) / (current_w + 1e-6f);
                     c_new_val = __float_as_int(c_new);
                     c_old_val = atomicCAS(c_addr_i, c_assumed, c_new_val);
                 } while (c_assumed != c_old_val);
@@ -166,14 +183,14 @@ void TSDFVolume::syncToGPU() {
         gpu_data[i].g      = voxels_[i].g;
         gpu_data[i].b      = voxels_[i].b;
     }
-    cudaMemcpy(d_voxels_.get(), gpu_data.data(), n * sizeof(VoxelGPU), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_voxels_.get(), gpu_data.data(), n * sizeof(VoxelGPU), cudaMemcpyHostToDevice));
 }
 
 void TSDFVolume::syncFromGPU() {
     if (!gpu_valid_) return;
     size_t n = voxels_.size();
     std::vector<VoxelGPU> gpu_data(n);
-    cudaMemcpy(gpu_data.data(), d_voxels_.get(), n * sizeof(VoxelGPU), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(gpu_data.data(), d_voxels_.get(), n * sizeof(VoxelGPU), cudaMemcpyDeviceToHost));
     for (size_t i = 0; i < n; ++i) {
         float w = gpu_data[i].weight;
         voxels_[i].weight = w;
@@ -196,8 +213,8 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
                                int   width, int height)
 {
     if (!gpu_valid_) return;
-    cudaMemcpy(d_depth_.get(), depth_meters, width * height * sizeof(float), cudaMemcpyHostToDevice);
-    if (rgb) cudaMemcpy(d_rgb_.get(), rgb, width * height * 3, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_depth_.get(), depth_meters, width * height * sizeof(float), cudaMemcpyHostToDevice));
+    if (rgb) CUDA_CHECK(cudaMemcpy(d_rgb_.get(), rgb, width * height * 3, cudaMemcpyHostToDevice));
 
     Eigen::Matrix3f R_cw = pose.block<3,3>(0,0);
     Eigen::Vector3f t_cw = pose.block<3,1>(0,3);
@@ -217,7 +234,8 @@ void TSDFVolume::integrateGPU(const float*           depth_meters,
         R_wc(0,0), R_wc(0,1), R_wc(0,2), R_wc(1,0), R_wc(1,1), R_wc(1,2), R_wc(2,0), R_wc(2,1), R_wc(2,2),
         t_wc.x(), t_wc.y(), t_wc.z()
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_LAST();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 __device__ float3 computeNormalGPU(void* voxels_void, int resolution, int x, int y, int z) {
@@ -341,7 +359,8 @@ void TSDFVolume::raycastGPU(const Eigen::Matrix4f& pose,
         R(2,0), R(2,1), R(2,2), t.z(),
         width, height, d_vertices, d_normals, d_colors
     );
-    cudaDeviceSynchronize();
+    CUDA_CHECK_LAST();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // -------------------------------------------------------------------
@@ -416,6 +435,8 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
     dim3 grid((res + block.x - 1) / block.x, (res + block.y - 1) / block.y, (res + block.z - 1) / block.z);
 
     classifyVoxelKernel<<<grid, block>>>(d_voxels_.get(), res, d_is_valid.get());
+    CUDA_CHECK_LAST();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Use Thrust for exclusive scan to get compaction offsets
     thrust::device_ptr<uint32_t> d_ptr_valid(d_is_valid.get());
@@ -424,8 +445,8 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
 
     uint32_t total_points = 0;
     uint32_t last_valid, last_offset;
-    cudaMemcpy(&last_valid, d_is_valid.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&last_offset, d_offsets.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(&last_valid, d_is_valid.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&last_offset, d_offsets.get() + total_voxels - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost));
     total_points = last_offset + last_valid;
 
     if (total_points == 0) return;
@@ -439,11 +460,13 @@ void TSDFVolume::extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points
         make_float3(params_.origin.x(), params_.origin.y(), params_.origin.z()),
         d_out_points.get(), d_out_colors.get()
     );
+    CUDA_CHECK_LAST();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<float3> h_points(total_points);
     std::vector<uchar3> h_colors(total_points);
-    cudaMemcpy(h_points.data(), d_out_points.get(), total_points * sizeof(float3), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_colors.data(), d_out_colors.get(), total_points * sizeof(uchar3), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_points.data(), d_out_points.get(), total_points * sizeof(float3), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_colors.data(), d_out_colors.get(), total_points * sizeof(uchar3), cudaMemcpyDeviceToHost));
 
     points_out.resize(total_points);
     colors_out.resize(total_points * 3);

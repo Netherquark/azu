@@ -82,6 +82,7 @@ bool PipelineController::start() {
         for (int i = 0; i < 2; ++i) {
             model_pingpong_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
             model_pingpong_.buffers[i]->d_normals = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            model_pingpong_.buffers[i]->d_colors = utils::make_cuda_unique<uchar3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
         }
         use_gpu_ = true;
         tsdf_->setGPUEnabled(true);
@@ -169,6 +170,12 @@ void PipelineController::stop() {
   if (meshing_thread_.joinable())
     meshing_thread_.join();
 
+#ifdef CUDA_ENABLED
+  if (use_gpu_.load()) {
+      cudaDeviceSynchronize();
+  }
+#endif
+
   // FINAL EXTRACTION: Collect all voxels for a "Full Model" point cloud view
   KFLOG_INFO("Pipeline", "Extracting full model point cloud for final view...");
   auto global_frame = std::make_shared<sensor::FrameData>();
@@ -192,6 +199,7 @@ void PipelineController::stop() {
     for (int i = 0; i < 2; ++i) {
         model_pingpong_.buffers[i]->d_vertices.reset();
         model_pingpong_.buffers[i]->d_normals.reset();
+        model_pingpong_.buffers[i]->d_colors.reset();
     }
 #endif
   KFLOG_INFO("Pipeline", "Pipeline shutdown complete.");
@@ -403,32 +411,39 @@ void PipelineController::trackingLoop() {
     tracking::ICPResult icp_result;
     bool is_lost = (state_.load() == PipelineState::TrackingLost);
 
-    if (use_gpu_.load()) {
+    if (is_lost) {
+      // RELOCALIZATION MODE: Try harder to catch the pose
+      tracking::ICPParams recovery_params = hyperparams_.icp;
+      recovery_params.dist_threshold *= 3.0f; // 30cm instead of 10cm
+      recovery_params.angle_threshold = 60.0f;
+
+      // Backup original params
+      tracking::ICPParams original_params = tracker_->params();
+      tracker_->setParams(recovery_params);
+
+      // Try relocalizing at the coarsest level first with more iterations
+      if (use_gpu_.load()) {
 #ifdef CUDA_ENABLED
-      icp_result = tracker_->trackGPU(pyramid, *model_ref, predicted_pose);
+        icp_result = tracker_->trackGPU(pyramid, *model_ref, prev_pose, prev_pose);
 #endif
-    } else {
-      if (is_lost) {
-        // RELOCALIZATION MODE: Try harder to catch the pose
-        tracking::ICPParams recovery_params = hyperparams_.icp;
-        recovery_params.dist_threshold *= 3.0f; // 30cm instead of 10cm
-        recovery_params.angle_threshold = 60.0f;
-
-        // Backup original params
-        tracking::ICPParams original_params = tracker_->params();
-        tracker_->setParams(recovery_params);
-
-        // Try relocalizing at the coarsest level first with more iterations
-        icp_result = tracker_->track(pyramid, *model_ref, prev_pose);
-
-        // Restore params
-        tracker_->setParams(original_params);
       } else {
-        icp_result = tracker_->track(pyramid, *model_ref, predicted_pose);
+        icp_result = tracker_->track(pyramid, *model_ref, prev_pose, prev_pose);
+      }
 
-        // If predicted pose fails, retry with stationary pose (safety fallback)
+      // Restore params
+      tracker_->setParams(original_params);
+    } else {
+      if (use_gpu_.load()) {
+#ifdef CUDA_ENABLED
+        icp_result = tracker_->trackGPU(pyramid, *model_ref, predicted_pose, prev_pose);
         if (!icp_result.tracking_ok) {
-          icp_result = tracker_->track(pyramid, *model_ref, prev_pose);
+          icp_result = tracker_->trackGPU(pyramid, *model_ref, prev_pose, prev_pose);
+        }
+#endif
+      } else {
+        icp_result = tracker_->track(pyramid, *model_ref, predicted_pose, prev_pose);
+        if (!icp_result.tracking_ok) {
+          icp_result = tracker_->track(pyramid, *model_ref, prev_pose, prev_pose);
         }
       }
     }
@@ -543,6 +558,8 @@ void PipelineController::integrationLoop() {
       if (frame_ready_cb_) {
         size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
         cudaMemcpy(model_back.vertices.data(), model_back.d_vertices.get(),
+                   n * sizeof(float3), cudaMemcpyDeviceToHost);
+        cudaMemcpy(model_back.normals.data(), model_back.d_normals.get(),
                    n * sizeof(float3), cudaMemcpyDeviceToHost);
         cudaMemcpy(model_back.colors.data(), model_back.d_colors.get(),
                    n * sizeof(uchar3), cudaMemcpyDeviceToHost);

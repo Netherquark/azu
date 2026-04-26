@@ -8,6 +8,22 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        } \
+    } while(0)
+
+#define CUDA_CHECK_LAST() \
+    do { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        } \
+    } while(0)
+
 namespace kfusion {
 namespace tracking {
 
@@ -73,7 +89,8 @@ __global__ void computeHessianKernel(
                     float3 v_model_world = model_vertices[midx];
                     float3 n_model_world = model_normals[midx];
 
-                    if (v_model_world.z != 0) { // validity check
+                    if (v_model_world.x * v_model_world.x + v_model_world.y * v_model_world.y + v_model_world.z * v_model_world.z > 1e-6f &&
+                        n_model_world.x * n_model_world.x + n_model_world.y * n_model_world.y + n_model_world.z * n_model_world.z > 1e-6f) { // validity check
                         // Transform world model point/normal to reference camera space
                         float3 v_model;
                         v_model.x = rw00 * v_model_world.x + rw01 * v_model_world.y + rw02 * v_model_world.z + twx;
@@ -201,7 +218,7 @@ __global__ void computeHessianKernel(
 // ---------------------------------------------------------------------------
 
 void ICPTracker::initGPU() {
-    d_hessian_ = utils::make_cuda_unique<float>(64); // increased from 32
+    d_hessian_ = utils::make_cuda_unique<float>(34); // 34 floats used
 }
 
 void ICPTracker::freeGPU() {
@@ -230,7 +247,7 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
     float angle_thresh_cos = cosf(params_.angle_threshold * 3.14159f / 180.0f);
 
     for (int iter = 0; iter < max_iter; ++iter) {
-        cudaMemset(d_hessian_.get(), 0, 64 * sizeof(float));
+        CUDA_CHECK(cudaMemset(d_hessian_.get(), 0, 34 * sizeof(float)));
 
         Eigen::Matrix4f rel = ref_pose.inverse() * result.pose;
         Eigen::Matrix3f R = rel.block<3,3>(0,0);
@@ -260,9 +277,11 @@ ICPResult ICPTracker::trackLevelGPU(const float3*            d_v_live,
             tw.x(), tw.y(), tw.z(),
             d_hessian_.get()
         );
+        CUDA_CHECK_LAST();
+        CUDA_CHECK(cudaDeviceSynchronize());
 
-        float h_hessian[64];
-        cudaMemcpy(h_hessian, d_hessian_.get(), 64 * sizeof(float), cudaMemcpyDeviceToHost);
+        float h_hessian[34];
+        CUDA_CHECK(cudaMemcpy(h_hessian, d_hessian_.get(), 34 * sizeof(float), cudaMemcpyDeviceToHost));
 
         Eigen::Matrix<float,6,6> A = Eigen::Matrix<float,6,6>::Zero();
         Eigen::Matrix<float,6,1> b = Eigen::Matrix<float,6,1>::Zero();

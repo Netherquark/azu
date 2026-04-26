@@ -7,6 +7,24 @@
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
 #include <iostream>
+#include "tsdf/VoxelGPU.h"
+#include "utils/CudaUniquePtr.h"
+
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        } \
+    } while(0)
+
+#define CUDA_CHECK_LAST() \
+    do { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        } \
+    } while(0)
 
 namespace kfusion {
 namespace meshing {
@@ -468,12 +486,12 @@ void MarchingCubes::initGPU(int res) {
     freeGPU();
 
     size_t n = (size_t)res * res * res;
-    cudaMalloc(&d_voxel_tri_counts_, n * sizeof(uint32_t));
-    cudaMalloc(&d_voxel_offsets_, (n + 1) * sizeof(uint32_t));
+    d_voxel_tri_counts_ = utils::make_cuda_unique<uint32_t>(n);
+    d_voxel_offsets_    = utils::make_cuda_unique<uint32_t>(n + 1);
     
-    cudaMalloc(&d_mesh_vertices_, max_triangles_ * 3 * sizeof(float3));
-    cudaMalloc(&d_mesh_normals_,  max_triangles_ * 3 * sizeof(float3));
-    cudaMalloc(&d_mesh_colors_,   max_triangles_ * 3 * 3 * sizeof(uint8_t));
+    d_mesh_vertices_ = utils::make_cuda_unique<float3>(max_triangles_ * 3);
+    d_mesh_normals_  = utils::make_cuda_unique<float3>(max_triangles_ * 3);
+    d_mesh_colors_   = utils::make_cuda_unique<uint8_t>(max_triangles_ * 3 * 3);
 
     // Tables from MarchingCubes.cpp
     const int corner_offsets[8][3] = {{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
@@ -488,14 +506,11 @@ void MarchingCubes::initGPU(int res) {
 }
 
 void MarchingCubes::freeGPU() {
-    if (d_voxel_tri_counts_) cudaFree(d_voxel_tri_counts_);
-    if (d_voxel_offsets_)    cudaFree(d_voxel_offsets_);
-    if (d_mesh_vertices_)    cudaFree(d_mesh_vertices_);
-    if (d_mesh_normals_)     cudaFree(d_mesh_normals_);
-    if (d_mesh_colors_)      cudaFree(d_mesh_colors_);
-    d_voxel_tri_counts_ = d_voxel_offsets_ = nullptr;
-    d_mesh_vertices_ = d_mesh_normals_ = nullptr;
-    d_mesh_colors_ = nullptr;
+    d_voxel_tri_counts_.reset();
+    d_voxel_offsets_.reset();
+    d_mesh_vertices_.reset();
+    d_mesh_normals_.reset();
+    d_mesh_colors_.reset();
 }
 
 std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volume) {
@@ -506,19 +521,21 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
     dim3 block(8, 8, 8);
     dim3 grid((params.resolution + 7)/8, (params.resolution + 7)/8, (params.resolution + 7)/8);
 
-    classifyVoxelKernel<<<grid, block>>>((void*)volume.getGPUVoxels(), params.resolution, d_voxel_tri_counts_);
+    classifyVoxelKernel<<<grid, block>>>((void*)volume.getGPUVoxels(), params.resolution, d_voxel_tri_counts_.get());
+    CUDA_CHECK_LAST();
+    CUDA_CHECK(cudaDeviceSynchronize());
     
-    thrust::device_ptr<uint32_t> d_counts(d_voxel_tri_counts_);
-    thrust::device_ptr<uint32_t> d_offsets(d_voxel_offsets_);
+    thrust::device_ptr<uint32_t> d_counts(d_voxel_tri_counts_.get());
+    thrust::device_ptr<uint32_t> d_offsets(d_voxel_offsets_.get());
     thrust::exclusive_scan(d_counts, d_counts + n, d_offsets);
     
     uint32_t total_tris;
-    cudaMemcpy(&total_tris, d_voxel_offsets_ + n - 1, 4, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(&total_tris, d_voxel_offsets_.get() + n - 1, 4, cudaMemcpyDeviceToHost));
     uint32_t last_count;
-    cudaMemcpy(&last_count, d_voxel_tri_counts_ + n - 1, 4, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(&last_count, d_voxel_tri_counts_.get() + n - 1, 4, cudaMemcpyDeviceToHost));
     total_tris += last_count;
     
-    cudaMemcpy(d_voxel_offsets_ + n, &total_tris, 4, cudaMemcpyDeviceToDevice);
+    CUDA_CHECK(cudaMemcpy(d_voxel_offsets_.get() + n, &total_tris, 4, cudaMemcpyDeviceToDevice));
 
     std::shared_ptr<MeshData> mesh = std::make_shared<MeshData>();
     if (total_tris > 0) {
@@ -527,18 +544,19 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
         float3 origin = {params.origin.x(), params.origin.y(), params.origin.z()};
         generateMeshKernel<<<grid, block>>>(
             (void*)volume.getGPUVoxels(), params.resolution, params.voxel_size, origin,
-            d_voxel_offsets_, max_triangles_, d_mesh_vertices_, d_mesh_normals_, d_mesh_colors_
+            d_voxel_offsets_.get(), max_triangles_, d_mesh_vertices_.get(), d_mesh_normals_.get(), d_mesh_colors_.get()
         );
-        cudaDeviceSynchronize();
+        CUDA_CHECK_LAST();
+        CUDA_CHECK(cudaDeviceSynchronize());
 
         mesh->positions.resize(capped_tris * 3);
         mesh->normals.resize(capped_tris * 3);
         mesh->colors.resize(capped_tris * 3 * 3);
         mesh->indices.resize(capped_tris * 3);
         
-        cudaMemcpy(mesh->positions.data(), d_mesh_vertices_, capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(mesh->normals.data(), d_mesh_normals_, capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(mesh->colors.data(), d_mesh_colors_, capped_tris * 9, cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(mesh->positions.data(), d_mesh_vertices_.get(), capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(mesh->normals.data(), d_mesh_normals_.get(), capped_tris * 3 * sizeof(float3), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(mesh->colors.data(), d_mesh_colors_.get(), capped_tris * 9, cudaMemcpyDeviceToHost));
         for (uint32_t i = 0; i < capped_tris * 3; ++i) mesh->indices[i] = i;
         
         if (total_tris > max_triangles_) {

@@ -2,6 +2,7 @@
 
 #include "meshing/MeshData.h"
 #include "tsdf/TSDFVolume.h"
+#include "utils/CudaUniquePtr.h"
 #include <functional>
 
 namespace kfusion {
@@ -28,11 +29,11 @@ public:
 private:
 #ifdef CUDA_ENABLED
     // Persistent GPU buffers owned by this instance
-    uint32_t* d_voxel_tri_counts_ = nullptr;
-    uint32_t* d_voxel_offsets_    = nullptr;
-    float3*   d_mesh_vertices_    = nullptr;
-    float3*   d_mesh_normals_     = nullptr;
-    uint8_t*  d_mesh_colors_      = nullptr;
+    utils::CudaUniquePtr<uint32_t> d_voxel_tri_counts_;
+    utils::CudaUniquePtr<uint32_t> d_voxel_offsets_;
+    utils::CudaUniquePtr<float3>   d_mesh_vertices_;
+    utils::CudaUniquePtr<float3>   d_mesh_normals_;
+    utils::CudaUniquePtr<uint8_t>  d_mesh_colors_;
     
     size_t    max_triangles_      = 2000000;
     int       last_resolution_    = 0;
