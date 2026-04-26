@@ -451,6 +451,9 @@ __global__ void generateMeshKernel(
                                     origin.y + (y + c_corner_offsets[c2][1]) * voxel_size,
                                     origin.z + (z + c_corner_offsets[c2][2]) * voxel_size);
             edge_v[i] = interpolateEdgeGPU(p1, corner_vals[c1], p2, corner_vals[c2]);
+            if (isnan(edge_v[i].x) || isnan(edge_v[i].y) || isnan(edge_v[i].z)) {
+                edge_v[i] = make_float3(0,0,0);
+            }
             
             float3 n1 = computeNormalGPU(voxels_void, resolution, x+c_corner_offsets[c1][0], y+c_corner_offsets[c1][1], z+c_corner_offsets[c1][2]);
             float3 n2 = computeNormalGPU(voxels_void, resolution, x+c_corner_offsets[c2][0], y+c_corner_offsets[c2][1], z+c_corner_offsets[c2][2]);

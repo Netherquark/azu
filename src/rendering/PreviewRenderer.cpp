@@ -211,9 +211,12 @@ void PreviewRenderer::uploadPointCloud(const sensor::FrameData& frame) {
     int count = 0;
 
     for (int i = 0; i < N; ++i) {
-        // Handle both live frames (depth check) and raycasted model frames (z check)
-        bool valid = (frame.depth_meters.size() > i) ? (frame.depth_meters[i] > 0.0f) : (frame.vertices[i].z() > 0.0f);
-        if (!valid) continue;
+        // Handle both live frames (depth check) and raycasted model frames (norm check)
+        // Raycasted points are in WORLD space, so z > 0 check is invalid. 
+        // Use norm > 1e-6 to identify valid hits and skip empty points (0,0,0).
+        const auto& v = frame.vertices[i];
+        bool valid = (frame.depth_meters.size() > i) ? (frame.depth_meters[i] > 0.0f) : (v.norm() > 1e-6f);
+        if (!valid || std::isnan(v.x()) || std::isnan(v.y()) || std::isnan(v.z())) continue;
 
         const auto& v = frame.vertices[i];
         positions.push_back(v.x());

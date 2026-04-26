@@ -296,7 +296,16 @@ __global__ void raycastKernel(
         if (prev_tsdf > 0.0f && tsdf <= 0.0f) {
             // Surface zero-crossing found
             float t_hit = t - step * tsdf / (tsdf - prev_tsdf + 1e-6f);
+            if (isnan(t_hit) || isinf(t_hit)) {
+                out_v[py * width + px] = make_float3(0,0,0);
+                return;
+            }
             float3 pf = make_float3(pos_w.x + ray_w.x * t_hit, pos_w.y + ray_w.y * t_hit, pos_w.z + ray_w.z * t_hit);
+
+            if (isnan(pf.x) || isnan(pf.y) || isnan(pf.z)) {
+                out_v[py * width + px] = make_float3(0,0,0);
+                return;
+            }
 
             
             out_v[py * width + px] = pf;

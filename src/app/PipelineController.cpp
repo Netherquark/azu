@@ -590,19 +590,27 @@ void PipelineController::integrationLoop() {
       // Sync to CPU for UI preview
       if (frame_ready_cb_) {
         size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
-        cudaMemcpy(model_back.vertices.data(), model_back.d_vertices.get(),
-                   n * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(model_back.normals.data(), model_back.d_normals.get(),
-                   n * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(model_back.colors.data(), model_back.d_colors.get(),
-                   n * sizeof(uchar3), cudaMemcpyDeviceToHost);
+        std::vector<float3> h_v(n);
+        std::vector<float3> h_n(n);
+        std::vector<uchar3> h_c(n);
+
+        cudaMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_n.data(), model_back.d_normals.get(), n * sizeof(float3), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), cudaMemcpyDeviceToHost);
 
         auto ui_frame = std::make_shared<sensor::FrameData>();
         ui_frame->width = sensor::DEPTH_WIDTH;
         ui_frame->height = sensor::DEPTH_HEIGHT;
-        ui_frame->vertices = model_back.vertices;
-        ui_frame->rgb = model_back.colors;
+        ui_frame->vertices.reserve(n);
+        ui_frame->rgb.reserve(n * 3);
         ui_frame->pose = Eigen::Matrix4f::Identity();
+
+        for (size_t i = 0; i < n; ++i) {
+          ui_frame->vertices.emplace_back(h_v[i].x, h_v[i].y, h_v[i].z);
+          ui_frame->rgb.push_back(h_c[i].x);
+          ui_frame->rgb.push_back(h_c[i].y);
+          ui_frame->rgb.push_back(h_c[i].z);
+        }
 
         QMetaObject::invokeMethod(
             qApp,
