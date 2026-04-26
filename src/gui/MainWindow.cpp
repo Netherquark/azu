@@ -82,6 +82,11 @@ void MainWindow::connectSignals() {
         if (pipeline_) pipeline_->setNumThreads(n);
     });
 
+    connect(control_panel_, &ControlPanel::cameraRotationChanged,
+            gl_widget_, &OpenGLWidget::setCameraRotation);
+    connect(gl_widget_, &OpenGLWidget::cameraRotated,
+            control_panel_, &ControlPanel::setCameraRotation);
+
     connect(control_panel_, &ControlPanel::hyperparamsApplyClicked, this, [this]() {
         auto h = control_panel_->hyperparamsFromUi();
         if (h.min_depth >= h.max_depth) {

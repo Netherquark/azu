@@ -36,7 +36,7 @@ public:
     /** Clear uploaded point cloud and mesh (e.g. after reset scan). */
     void clearGeometry();
 
-    OrbitCamera& camera() { return camera_; }
+    Camera& camera() { return camera_; }
 
 private:
     RenderMode   mode_      = RenderMode::PointCloud;
@@ -44,7 +44,7 @@ private:
     int          viewport_h_ = 1;
     bool         initialized_ = false;
 
-    OrbitCamera  camera_;
+    Camera  camera_;
 
     // Point cloud GL objects
     unsigned int pc_vao_ = 0, pc_vbo_pos_ = 0, pc_vbo_col_ = 0;
