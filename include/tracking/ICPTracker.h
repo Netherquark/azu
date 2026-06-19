@@ -4,7 +4,13 @@
 #include <Eigen/Geometry>
 #include <vector>
 #include "sensor/FrameData.h"
+#ifdef CUDA_ENABLED
 #include "utils/CudaUniquePtr.h"
+#endif
+#ifdef HIP_ENABLED
+#include "utils/HipUniquePtr.h"
+#include <hip/hip_vector_types.h>
+#endif
 
 namespace kfusion {
 namespace tracking {
@@ -42,6 +48,10 @@ struct ModelFrame {
     utils::CudaUniquePtr<float3> d_vertices;
     utils::CudaUniquePtr<float3> d_normals;
     utils::CudaUniquePtr<uchar3> d_colors;
+#elif defined(HIP_ENABLED)
+    utils::HipUniquePtr<float3> d_vertices;
+    utils::HipUniquePtr<float3> d_normals;
+    utils::HipUniquePtr<uchar3> d_colors;
 #endif
 
     int width  = sensor::FRAME_W;
@@ -75,6 +85,16 @@ public:
                        const Eigen::Matrix4f&      ref_pose);
     void initGPU();
     void freeGPU();
+#elif defined(HIP_ENABLED)
+    ICPResult trackGPU(const float*                d_depth,
+                       const uint8_t*              d_rgb,
+                       int                         width,
+                       int                         height,
+                       const ModelFrame&           model,
+                       const Eigen::Matrix4f&      pose_estimate,
+                       const Eigen::Matrix4f&      ref_pose);
+    void initGPU();
+    void freeGPU();
 #endif
 
     const ICPParams& params() const { return params_; }
@@ -99,6 +119,23 @@ private:
     // Pyramid level buffers
     utils::CudaUniquePtr<float3> d_pyramid_v[sensor::FramePyramid::LEVELS];
     utils::CudaUniquePtr<float3> d_pyramid_n[sensor::FramePyramid::LEVELS];
+    
+    ICPResult trackLevelGPU(const float3*            d_v_live,
+                            const float3*            d_n_live,
+                            int                      width,
+                            int                      height,
+                            const ModelFrame&        model,
+                            const Eigen::Matrix4f&   pose_estimate,
+                            const Eigen::Matrix4f&   ref_pose,
+                            int                      level,
+                            int                      max_iter);
+#elif defined(HIP_ENABLED)
+    // Persistent GPU buffers to avoid allocations
+    utils::HipUniquePtr<float> d_hessian_; 
+    
+    // Pyramid level buffers
+    utils::HipUniquePtr<float3> d_pyramid_v[sensor::FramePyramid::LEVELS];
+    utils::HipUniquePtr<float3> d_pyramid_n[sensor::FramePyramid::LEVELS];
     
     ICPResult trackLevelGPU(const float3*            d_v_live,
                             const float3*            d_n_live,

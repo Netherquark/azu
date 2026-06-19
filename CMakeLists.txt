@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.21)
 project(KinectFusionQt VERSION 1.0.0 LANGUAGES CXX)
 
 # ---- General Configuration ----
@@ -50,7 +50,30 @@ if(CMAKE_CUDA_COMPILER)
     message(STATUS "CUDA found: ${CMAKE_CUDA_COMPILER} (Archs: ${CMAKE_CUDA_ARCHITECTURES})")
 else()
     set(CUDA_AVAILABLE FALSE)
-    message(STATUS "CUDA not found - falling back to CPU-only implementation")
+    message(STATUS "CUDA not found")
+endif()
+
+# ---- Optional HIP Configuration ----
+
+check_language(HIP)
+
+if(CMAKE_HIP_COMPILER)
+    enable_language(HIP)
+    set(HIP_AVAILABLE TRUE)
+    add_compile_definitions(HIP_ENABLED __HIP_PLATFORM_AMD__)
+    set(CMAKE_HIP_STANDARD 17)
+    
+    # Target architectures: gfx90c for 5650u
+    set(CMAKE_HIP_ARCHITECTURES gfx90c)
+    
+    message(STATUS "HIP found: ${CMAKE_HIP_COMPILER} (Archs: ${CMAKE_HIP_ARCHITECTURES})")
+else()
+    set(HIP_AVAILABLE FALSE)
+    message(STATUS "HIP not found")
+endif()
+
+if(NOT CUDA_AVAILABLE AND NOT HIP_AVAILABLE)
+    message(STATUS "No GPU acceleration found - falling back to CPU-only implementation")
 endif()
 
 # ---- Dependency Resolution ----
@@ -151,9 +174,18 @@ if(CUDA_AVAILABLE)
     list(APPEND ALL_SOURCES ${CUDA_SOURCES})
 endif()
 
+if(HIP_AVAILABLE)
+    file(GLOB_RECURSE HIP_SOURCES CONFIGURE_DEPENDS "src/*.hip")
+    list(APPEND ALL_SOURCES ${HIP_SOURCES})
+endif()
+
 set(SIGNAL_BACKEND "OpenMP")
-if(CUDA_AVAILABLE)
+if(CUDA_AVAILABLE AND HIP_AVAILABLE)
+    set(SIGNAL_BACKEND "CUDA+HIP+OpenMP (Warning: Both Enabled)")
+elseif(CUDA_AVAILABLE)
     set(SIGNAL_BACKEND "CUDA+OpenMP")
+elseif(HIP_AVAILABLE)
+    set(SIGNAL_BACKEND "HIP+OpenMP")
 endif()
 
 # ---- Build Target ----
@@ -193,6 +225,13 @@ if(CUDA_AVAILABLE)
     )
 endif()
 
+if(HIP_AVAILABLE)
+    # Force the host linker (g++) instead of ld.lld so all CXX objects are found.
+    # HIP device code is embedded in the .hip.o objects; g++ handles the final link.
+    set_target_properties(KinectFusionQt PROPERTIES LINKER_LANGUAGE CXX)
+    target_link_libraries(KinectFusionQt PRIVATE amdhip64)
+endif()
+
 if(OpenMP_CXX_FOUND)
     target_link_libraries(KinectFusionQt PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -215,6 +254,10 @@ message(STATUS "  Build Type:   ${CMAKE_BUILD_TYPE}")
 message(STATUS "  CUDA Support: ${CUDA_AVAILABLE}")
 if(CUDA_AVAILABLE)
     message(STATUS "  CUDA Arch:    ${CMAKE_CUDA_ARCHITECTURES}")
+endif()
+message(STATUS "  HIP Support:  ${HIP_AVAILABLE}")
+if(HIP_AVAILABLE)
+    message(STATUS "  HIP Arch:     ${CMAKE_HIP_ARCHITECTURES}")
 endif()
 message(STATUS "  OpenMP:       ${OpenMP_CXX_FOUND}")
 message(STATUS "  Kinect I/O:   ${FREENECT_FOUND}")

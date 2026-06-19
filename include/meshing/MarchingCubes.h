@@ -2,7 +2,13 @@
 
 #include "meshing/MeshData.h"
 #include "tsdf/TSDFVolume.h"
+#ifdef CUDA_ENABLED
 #include "utils/CudaUniquePtr.h"
+#endif
+#ifdef HIP_ENABLED
+#include "utils/HipUniquePtr.h"
+#include <hip/hip_vector_types.h>
+#endif
 #include <functional>
 
 namespace kfusion {
@@ -34,6 +40,19 @@ private:
     utils::CudaUniquePtr<float3>   d_mesh_vertices_;
     utils::CudaUniquePtr<float3>   d_mesh_normals_;
     utils::CudaUniquePtr<uint8_t>  d_mesh_colors_;
+    
+    size_t    max_triangles_      = 2000000;
+    int       last_resolution_    = 0;
+
+    void initGPU(int resolution);
+    void freeGPU();
+#elif defined(HIP_ENABLED)
+    // Persistent GPU buffers owned by this instance
+    utils::HipUniquePtr<uint32_t> d_voxel_tri_counts_;
+    utils::HipUniquePtr<uint32_t> d_voxel_offsets_;
+    utils::HipUniquePtr<float3>   d_mesh_vertices_;
+    utils::HipUniquePtr<float3>   d_mesh_normals_;
+    utils::HipUniquePtr<uint8_t>  d_mesh_colors_;
     
     size_t    max_triangles_      = 2000000;
     int       last_resolution_    = 0;

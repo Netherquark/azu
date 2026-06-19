@@ -17,6 +17,11 @@ void applyCAS_CPU(std::vector<uint8_t>& rgb, int width, int height, float sharpn
  * @brief Applies GPU-accelerated Contrast Adaptive Sharpening (AMD FSR 1.0 CAS math) in-place.
  */
 void applyCAS_GPU(std::vector<uint8_t>& rgb, int width, int height, float sharpness = 0.85f);
+#elif defined(HIP_ENABLED)
+/**
+ * @brief Applies GPU-accelerated Contrast Adaptive Sharpening (AMD FSR 1.0 CAS math) in-place.
+ */
+void applyCAS_GPU(std::vector<uint8_t>& rgb, int width, int height, float sharpness = 0.85f);
 #endif
 
 /**
@@ -29,6 +34,8 @@ void applyCAS_GPU(std::vector<uint8_t>& rgb, int width, int height, float sharpn
  */
 inline void applyCAS(std::vector<uint8_t>& rgb, int width, int height, float sharpness = 0.85f) {
 #ifdef CUDA_ENABLED
+    applyCAS_GPU(rgb, width, height, sharpness);
+#elif defined(HIP_ENABLED)
     applyCAS_GPU(rgb, width, height, sharpness);
 #else
     applyCAS_CPU(rgb, width, height, sharpness);

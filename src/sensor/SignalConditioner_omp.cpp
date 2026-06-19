@@ -10,6 +10,8 @@
 
 #ifdef CUDA_ENABLED
 #include <cuda_runtime.h>
+#elif defined(HIP_ENABLED)
+#include <hip/hip_runtime.h>
 #endif
 
 namespace kfusion {
@@ -145,6 +147,12 @@ void SignalConditioner::reset() {
     if (d_guidance_luma_) cudaMemset(d_guidance_luma_.get(), 0, guidance_luma_.size() * sizeof(float));
     if (d_depth_in_) cudaMemset(d_depth_in_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
     if (d_depth_out_) cudaMemset(d_depth_out_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
+#elif defined(HIP_ENABLED)
+    if (d_rgb_in_) hipMemset(d_rgb_in_.get(), 0, sr_rgb_.size());
+    if (d_rgb_out_) hipMemset(d_rgb_out_.get(), 0, sr_rgb_.size());
+    if (d_guidance_luma_) hipMemset(d_guidance_luma_.get(), 0, guidance_luma_.size() * sizeof(float));
+    if (d_depth_in_) hipMemset(d_depth_in_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
+    if (d_depth_out_) hipMemset(d_depth_out_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
 #endif
 }
 
@@ -152,6 +160,8 @@ void SignalConditioner::resetEMA() {
     std::fill(ema_buf_m_.begin(), ema_buf_m_.end(), 0.0f);
 #ifdef CUDA_ENABLED
     if (d_ema_buf_m_) cudaMemset(d_ema_buf_m_.get(), 0, ema_buf_m_.size() * sizeof(float));
+#elif defined(HIP_ENABLED)
+    if (d_ema_buf_m_) hipMemset(d_ema_buf_m_.get(), 0, ema_buf_m_.size() * sizeof(float));
 #endif
 }
 
@@ -163,6 +173,10 @@ void SignalConditioner::process(RawFrame& raw, cudaStream_t cuda_stream, float m
     }
 
 #ifdef CUDA_ENABLED
+    if (cuda_stream && processCuda(raw, cuda_stream, min_depth_m, max_depth_m)) {
+        return;
+    }
+#elif defined(HIP_ENABLED)
     if (cuda_stream && processCuda(raw, cuda_stream, min_depth_m, max_depth_m)) {
         return;
     }

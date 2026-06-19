@@ -5,10 +5,10 @@
 
 #ifdef CUDA_ENABLED
 #include "utils/CudaUniquePtr.h"
-#endif
-
-#ifdef CUDA_ENABLED
 #include <cuda_runtime_api.h>
+#elif defined(HIP_ENABLED)
+#include "utils/HipUniquePtr.h"
+#include <hip/hip_runtime_api.h>
 #endif
 
 namespace kfusion {
@@ -18,6 +18,8 @@ struct RawFrame;
 
 #ifdef CUDA_ENABLED
 using cudaStream_t = ::cudaStream_t;
+#elif defined(HIP_ENABLED)
+using cudaStream_t = ::hipStream_t;
 #else
 using cudaStream_t = void*;
 #endif
@@ -56,6 +58,22 @@ private:
     utils::CudaUniquePtr<float>    d_depth_meters_;
     utils::CudaUniquePtr<float>    d_ema_buf_m_;
     utils::CudaUniquePtr<float>    d_guidance_luma_;
+
+public:
+    uint16_t* getGPUDepthRaw() const { return d_depth_out_.get(); }
+    float*    getGPUDepthMeters() const { return d_depth_meters_.get(); }
+    uint8_t*  getGPURgb() const { return d_rgb_out_.get(); }
+#elif defined(HIP_ENABLED)
+    bool processCuda(RawFrame& raw, cudaStream_t cuda_stream, float min_depth_m, float max_depth_m);
+
+    // GPU resources
+    utils::HipUniquePtr<uint8_t>  d_rgb_in_;
+    utils::HipUniquePtr<uint8_t>  d_rgb_out_;
+    utils::HipUniquePtr<uint16_t> d_depth_in_;
+    utils::HipUniquePtr<uint16_t> d_depth_out_;
+    utils::HipUniquePtr<float>    d_depth_meters_;
+    utils::HipUniquePtr<float>    d_ema_buf_m_;
+    utils::HipUniquePtr<float>    d_guidance_luma_;
 
 public:
     uint16_t* getGPUDepthRaw() const { return d_depth_out_.get(); }

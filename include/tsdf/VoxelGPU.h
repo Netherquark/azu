@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #define ALIGN32 __align__(32)
 #else
 #define ALIGN32 alignas(32)

@@ -58,12 +58,16 @@ public:
     float*   getGPUDepthMeters() const override { 
 #ifdef CUDA_ENABLED
         return conditioner_.getGPUDepthMeters(); 
+#elif defined(HIP_ENABLED)
+        return conditioner_.getGPUDepthMeters(); 
 #else
         return nullptr;
 #endif
     }
     uint8_t* getGPURgb()         const override { 
 #ifdef CUDA_ENABLED
+        return conditioner_.getGPURgb(); 
+#elif defined(HIP_ENABLED)
         return conditioner_.getGPURgb(); 
 #else
         return nullptr;

@@ -13,6 +13,8 @@
 
 #ifdef CUDA_ENABLED
 #include <cuda_runtime.h>
+#elif defined(HIP_ENABLED)
+#include <hip/hip_runtime.h>
 #endif
 
 namespace kfusion {
@@ -103,6 +105,32 @@ bool PipelineController::start() {
         tsdf_->setGPUEnabled(false);
         KFLOGF_WARN("Pipeline", "CUDA initialization FAILED: %s. Falling back to CPU mode.", e.what());
     }
+#elif defined(HIP_ENABLED)
+    try {
+        tsdf_->initGPU();
+        tracker_->initGPU();
+        hipError_t stream_err = hipStreamCreate(&cuda_stream_);
+        if (stream_err != hipSuccess) {
+            throw std::runtime_error(hipGetErrorString(stream_err));
+        }
+        // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
+        for (int i = 0; i < 3; ++i) {
+            model_buffers_.buffers[i]->d_vertices = utils::make_hip_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            model_buffers_.buffers[i]->d_normals = utils::make_hip_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            model_buffers_.buffers[i]->d_colors = utils::make_hip_unique<uchar3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+        }
+        use_gpu_ = true;
+        tsdf_->setGPUEnabled(true);
+        KFLOG_INFO("Pipeline", "HIP/ROCm hardware acceleration ENABLED (AMD iGPU detected).");
+    } catch (const std::exception& e) {
+        if (cuda_stream_) {
+            hipStreamDestroy(cuda_stream_);
+            cuda_stream_ = nullptr;
+        }
+        use_gpu_ = false;
+        tsdf_->setGPUEnabled(false);
+        KFLOGF_WARN("Pipeline", "HIP initialization FAILED: %s. Falling back to CPU mode.", e.what());
+    }
 #else
     use_gpu_ = false;
     tsdf_->setGPUEnabled(false);
@@ -181,6 +209,10 @@ void PipelineController::stop() {
   if (use_gpu_.load()) {
       cudaDeviceSynchronize();
   }
+#elif defined(HIP_ENABLED)
+  if (use_gpu_.load()) {
+      hipDeviceSynchronize();
+  }
 #endif
 
   // FINAL EXTRACTION: Collect all voxels for a "Full Model" point cloud view
@@ -199,6 +231,18 @@ void PipelineController::stop() {
 #ifdef CUDA_ENABLED
     if (cuda_stream_) {
         cudaStreamDestroy(cuda_stream_);
+        cuda_stream_ = nullptr;
+    }
+    tsdf_->freeGPU();
+    tracker_->freeGPU();
+    for (int i = 0; i < 3; ++i) {
+        model_buffers_.buffers[i]->d_vertices.reset();
+        model_buffers_.buffers[i]->d_normals.reset();
+        model_buffers_.buffers[i]->d_colors.reset();
+    }
+#elif defined(HIP_ENABLED)
+    if (cuda_stream_) {
+        hipStreamDestroy(cuda_stream_);
         cuda_stream_ = nullptr;
     }
     tsdf_->freeGPU();
@@ -439,6 +483,13 @@ void PipelineController::trackingLoop() {
                 frame->width, frame->height,
                 *model_ref, h_pose, prev_pose
             );
+#elif defined(HIP_ENABLED)
+            res = tracker_->trackGPU(
+                preprocessor_->getGPUDepthMeters(),
+                preprocessor_->getGPURgb(),
+                frame->width, frame->height,
+                *model_ref, h_pose, prev_pose
+            );
 #endif
           } else {
             sensor::FramePyramid pyramid;
@@ -457,6 +508,21 @@ void PipelineController::trackingLoop() {
     } else {
       if (use_gpu_.load()) {
 #ifdef CUDA_ENABLED
+        icp_result = tracker_->trackGPU(
+            preprocessor_->getGPUDepthMeters(),
+            preprocessor_->getGPURgb(),
+            frame->width, frame->height,
+            *model_ref, predicted_pose, prev_pose
+        );
+        if (!icp_result.tracking_ok) {
+          icp_result = tracker_->trackGPU(
+              preprocessor_->getGPUDepthMeters(),
+              preprocessor_->getGPURgb(),
+              frame->width, frame->height,
+              *model_ref, prev_pose, prev_pose
+          );
+        }
+#elif defined(HIP_ENABLED)
         icp_result = tracker_->trackGPU(
             preprocessor_->getGPUDepthMeters(),
             preprocessor_->getGPURgb(),
@@ -607,6 +673,22 @@ void PipelineController::integrationLoop() {
               static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
               frame->width, frame->height);
       }
+#elif defined(HIP_ENABLED)
+      if (use_gpu_.load()) {
+          tsdf_->integrate(
+              frame->depth_meters.data(),
+              frame->rgb.data(),
+              frame->pose,
+              static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
+              static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
+              frame->width, frame->height);
+      } else {
+          tsdf_->integrate(
+              frame->depth_meters.data(), frame->rgb.data(), frame->pose,
+              static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
+              static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
+              frame->width, frame->height);
+      }
 #else
       tsdf_->integrate(
           frame->depth_meters.data(), frame->rgb.data(), frame->pose,
@@ -642,6 +724,49 @@ void PipelineController::integrationLoop() {
         cudaMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), cudaMemcpyDeviceToHost);
         cudaMemcpy(h_n.data(), model_back.d_normals.get(), n * sizeof(float3), cudaMemcpyDeviceToHost);
         cudaMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), cudaMemcpyDeviceToHost);
+
+        auto ui_frame = std::make_shared<sensor::FrameData>();
+        ui_frame->width = sensor::DEPTH_WIDTH;
+        ui_frame->height = sensor::DEPTH_HEIGHT;
+        ui_frame->vertices.reserve(n);
+        ui_frame->rgb.reserve(n * 3);
+        ui_frame->pose = Eigen::Matrix4f::Identity();
+
+        for (size_t i = 0; i < n; ++i) {
+          ui_frame->vertices.emplace_back(h_v[i].x, h_v[i].y, h_v[i].z);
+          ui_frame->rgb.push_back(h_c[i].x);
+          ui_frame->rgb.push_back(h_c[i].y);
+          ui_frame->rgb.push_back(h_c[i].z);
+        }
+
+        QMetaObject::invokeMethod(
+            qApp,
+            [this, ui_frame]() {
+              if (frame_ready_cb_)
+                frame_ready_cb_(*ui_frame);
+            },
+            Qt::QueuedConnection);
+      }
+#elif defined(HIP_ENABLED)
+      {
+          std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
+          tsdf_->raycastGPU(frame->pose, static_cast<float>(sensor::FX),
+                            static_cast<float>(sensor::FY),
+                            static_cast<float>(sensor::CX),
+                            static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
+                            sensor::DEPTH_HEIGHT, model_back.d_vertices.get(),
+                            model_back.d_normals.get(), model_back.d_colors.get());
+      }
+      // Sync to CPU for UI preview
+      if (frame_ready_cb_) {
+        size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
+        std::vector<float3> h_v(n);
+        std::vector<float3> h_n(n);
+        std::vector<uchar3> h_c(n);
+
+        hipMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), hipMemcpyDeviceToHost);
+        hipMemcpy(h_n.data(), model_back.d_normals.get(), n * sizeof(float3), hipMemcpyDeviceToHost);
+        hipMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), hipMemcpyDeviceToHost);
 
         auto ui_frame = std::make_shared<sensor::FrameData>();
         ui_frame->width = sensor::DEPTH_WIDTH;
@@ -756,6 +881,8 @@ void PipelineController::meshingLoop() {
       utils::ScopedTimer t("Mesh Extraction");
       std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
 #ifdef CUDA_ENABLED
+      mesh = cubes_->extractGPU(*tsdf_);
+#elif defined(HIP_ENABLED)
       mesh = cubes_->extractGPU(*tsdf_);
 #else
       mesh = cubes_->extract(*tsdf_, [this](float p) {

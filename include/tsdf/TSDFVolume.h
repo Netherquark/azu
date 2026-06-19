@@ -6,7 +6,13 @@
 #include <atomic>
 #include <shared_mutex>
 #include <mutex>
+#ifdef CUDA_ENABLED
 #include "utils/CudaUniquePtr.h"
+#endif
+#ifdef HIP_ENABLED
+#include "utils/HipUniquePtr.h"
+#include <hip/hip_vector_types.h>
+#endif
 #include "tsdf/VoxelGPU.h"
 
 namespace kfusion {
@@ -105,6 +111,27 @@ public:
                                     std::vector<uint8_t>&         colors_out) const;
 
     void* getGPUVoxels() const { return (void*)d_voxels_.get(); }
+#elif defined(HIP_ENABLED)
+    void initGPU();
+    void freeGPU();
+    void syncToGPU();
+    void syncFromGPU();
+    void integrateGPU(const float*           d_depth,
+                      const uint8_t*         d_rgb,
+                      const Eigen::Matrix4f& pose,
+                      float fx, float fy, 
+                      float cx, float cy,
+                      int width, int height);
+    void raycastGPU(const Eigen::Matrix4f& pose,
+                    float fx, float fy, float cx, float cy,
+                    int width, int height,
+                    float3* d_vertices, float3* d_normals,
+                    uchar3* d_colors = nullptr);
+
+    void extractGlobalPointCloudGPU(std::vector<Eigen::Vector3f>& points_out,
+                                    std::vector<uint8_t>&         colors_out) const;
+
+    void* getGPUVoxels() const { return (void*)d_voxels_.get(); }
 #endif
 
     void setGPUEnabled(bool enabled) { gpu_enabled_ = enabled; }
@@ -148,6 +175,21 @@ private:
     // Cached buffers for safe thread-decoupled integration
     mutable utils::CudaUniquePtr<float> d_depth_integ_;
     mutable utils::CudaUniquePtr<uint8_t> d_rgb_integ_;
+    
+    bool    gpu_valid_ = false;
+#elif defined(HIP_ENABLED)
+    // GPU state
+    utils::HipUniquePtr<VoxelGPU> d_voxels_; 
+    
+    // Cached buffers for point cloud extraction
+    mutable utils::HipUniquePtr<uint32_t> d_pc_is_valid_;
+    mutable utils::HipUniquePtr<uint32_t> d_pc_offsets_;
+    mutable utils::HipUniquePtr<float3> d_pc_out_points_;
+    mutable utils::HipUniquePtr<uchar3> d_pc_out_colors_;
+    
+    // Cached buffers for safe thread-decoupled integration
+    mutable utils::HipUniquePtr<float> d_depth_integ_;
+    mutable utils::HipUniquePtr<uint8_t> d_rgb_integ_;
     
     bool    gpu_valid_ = false;
 #endif

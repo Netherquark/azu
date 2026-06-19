@@ -26,6 +26,8 @@ MarchingCubes::MarchingCubes() {}
 MarchingCubes::~MarchingCubes() {
 #ifdef CUDA_ENABLED
     freeGPU();
+#elif defined(HIP_ENABLED)
+    freeGPU();
 #endif
 }
 
