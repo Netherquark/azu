@@ -220,6 +220,7 @@ void bilateralDenoiseRgb(const std::vector<uint8_t>& src, std::vector<uint8_t>& 
 SignalConditioner::SignalConditioner()
     : ema_buf_m_(FRAME_W * FRAME_H, 0.0f),
       sr_rgb_(FRAME_W * FRAME_H * 3, 0),
+      sr_rgb_upscaled_(FRAME_W * FRAME_H * 3, 0),
       rgb_scratch_(FRAME_W * FRAME_H * 3, 0),
       guidance_luma_(FRAME_W * FRAME_H, 0.0f),
       depth_scratch_(FRAME_W * FRAME_H, 0) {}
@@ -227,6 +228,7 @@ SignalConditioner::SignalConditioner()
 void SignalConditioner::reset() {
     resetEMA();
     std::fill(sr_rgb_.begin(), sr_rgb_.end(), 0);
+    std::fill(sr_rgb_upscaled_.begin(), sr_rgb_upscaled_.end(), 0);
     std::fill(rgb_scratch_.begin(), rgb_scratch_.end(), 0);
     std::fill(guidance_luma_.begin(), guidance_luma_.end(), 0.0f);
     std::fill(depth_scratch_.begin(), depth_scratch_.end(), 0);
@@ -285,6 +287,7 @@ void SignalConditioner::processCpu(RawFrame& raw, float min_depth_m, float max_d
     }
     
     preprocessRgb(raw.rgb);
+    applySuperResolutionToRgb(raw.rgb); // Apply EASU+RCAS for TSDF texturing
     buildSuperResolutionGuidance(raw.rgb); // Build guidance from processed RGB
     denoiseDepthSpatial(raw.depth, min_depth_m, max_depth_m);
     fillDepthHoles(raw.depth, min_depth_m, max_depth_m);
@@ -319,6 +322,27 @@ void SignalConditioner::buildSuperResolutionGuidance(const std::vector<uint8_t>&
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < FRAME_W * FRAME_H; ++i) {
         guidance_luma_[i] = rgbLuma(&sr_rgb_[i * 3]) / 255.0f;
+    }
+}
+
+void SignalConditioner::applySuperResolutionToRgb(const std::vector<uint8_t>& rgb) {
+    // Apply EASU upscaling + RCAS sharpening for TSDF texturing
+    // This is separate from guidance to avoid resolution mismatch
+    if (sr_scale_ > 1) {
+        // EASU upscaling
+        std::vector<uint8_t> upscaled;
+        sr::applyEASU(rgb, upscaled, FRAME_W, FRAME_H, sr_scale_);
+        
+        // RCAS sharpening on upscaled image
+        int sr_w = FRAME_W * sr_scale_;
+        int sr_h = FRAME_H * sr_scale_;
+        sr::applyCAS(upscaled, sr_w, sr_h, 0.5f);
+        
+        sr_rgb_upscaled_ = upscaled;
+    } else {
+        // Just RCAS sharpening at original resolution
+        sr_rgb_upscaled_ = rgb;
+        sr::applyCAS(sr_rgb_upscaled_, FRAME_W, FRAME_H, 0.5f);
     }
 }
 

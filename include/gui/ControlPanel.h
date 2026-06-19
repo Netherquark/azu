@@ -72,7 +72,7 @@ private:
     QDoubleSpinBox* spin_icp_angle_  = nullptr;
     QSpinBox*       spin_icp_it0_    = nullptr;
     QSpinBox*       spin_icp_it1_    = nullptr;
-    QDoubleSpinBox* spin_icp_it2_    = nullptr;
+    QSpinBox*       spin_icp_it2_    = nullptr;
     QPushButton*    btn_apply_hyper_ = nullptr;
     QComboBox*      combo_sr_scale_ = nullptr;
 

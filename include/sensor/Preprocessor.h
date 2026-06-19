@@ -26,6 +26,8 @@ public:
     virtual void reset() = 0;
     virtual void resetTemporalState() = 0;
     virtual void process(RawFrame& frame, float min_depth_m, float max_depth_m) = 0;
+    virtual void setSrScale(int scale) = 0;
+    virtual const std::vector<uint8_t>& getSrRgbUpscaled() const = 0;
 
     // GPU-native access (returns nullptr if CPU backend is used)
     virtual float*    getGPUDepthMeters() const { return nullptr; }
@@ -41,6 +43,8 @@ public:
     void reset() override;
     void resetTemporalState() override;
     void process(RawFrame& frame, float min_depth_m, float max_depth_m) override;
+    void setSrScale(int scale) override { conditioner_.setSrScale(scale); }
+    const std::vector<uint8_t>& getSrRgbUpscaled() const override { return conditioner_.getSrRgbUpscaled(); }
     PreprocessBackend backend() const override { return PreprocessBackend::CPU; }
 
 private:
@@ -54,6 +58,8 @@ public:
     void reset() override;
     void resetTemporalState() override;
     void process(RawFrame& frame, float min_depth_m, float max_depth_m) override;
+    void setSrScale(int scale) override { conditioner_.setSrScale(scale); }
+    const std::vector<uint8_t>& getSrRgbUpscaled() const override { return conditioner_.getSrRgbUpscaled(); }
     PreprocessBackend backend() const override { return PreprocessBackend::CUDA; }
 
     float*   getGPUDepthMeters() const override { 

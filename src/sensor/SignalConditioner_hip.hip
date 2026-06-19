@@ -444,7 +444,7 @@ bool SignalConditioner::processCuda(RawFrame& raw,
     medianBlur3x3Kernel<<<grid, block, 0, stream>>>(d_rgb_out_.get(), d_rgb_in_.get(), w, h);
     HIP_CHECK_LAST();
 
-    // 2. Super Resolution: EASU upscaling (if scale > 1) + RCAS sharpening
+    // 2. Super Resolution: EASU upscaling (if scale > 1) + RCAS sharpening for TSDF texturing
     // For now, keep guidance at original resolution for depth filtering
     // Apply RCAS for sharpening (original resolution guidance)
     float sharpness = 0.5f;
@@ -456,6 +456,8 @@ bool SignalConditioner::processCuda(RawFrame& raw,
     // Compute Luma for guided filter (at original resolution)
     computeLumaKernel<<<grid, block, 0, stream>>>(d_rgb_out_.get(), d_guidance_luma_.get(), w, h);
     HIP_CHECK_LAST();
+
+    // TODO: Apply EASU+RCAS to upscaled RGB for TSDF texturing (separate buffer)
 
     // 3. Depth pipeline
     denoiseDepthSpatialKernel<<<grid, block, 0, stream>>>(d_depth_in_.get(), d_depth_out_.get(), w, h, min_depth_m, max_depth_m);

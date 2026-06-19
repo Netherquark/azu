@@ -192,10 +192,13 @@ void PipelineController::setHyperparams(const FusionHyperparams &h) {
   }
   tracker_->setParams(hp.icp);
   tsdf_->setParams(hp.tsdf);
+  if (preprocessor_) {
+    preprocessor_->setSrScale(hp.sr_scale);
+  }
   KFLOGF_INFO(
       "Pipeline",
-      "New Hyperparameters Applied: D_min=%.2fm, D_max=%.2fm, TSDF_res=%.1fmm",
-      hp.min_depth, hp.max_depth, hp.tsdf.voxel_size * 1000.0f);
+      "New Hyperparameters Applied: D_min=%.2fm, D_max=%.2fm, TSDF_res=%.1fmm, SR_scale=%dx",
+      hp.min_depth, hp.max_depth, hp.tsdf.voxel_size * 1000.0f, hp.sr_scale);
 }
 
 void PipelineController::stop() {
@@ -407,6 +410,10 @@ void PipelineController::trackingLoop() {
     if (preprocessor_) {
         preprocessor_->process(*raw, d_min, d_max);
     }
+    // TODO: Use upscaled RGB for better texture quality in TSDF integration (future scope)
+    // Currently disabled as it causes black textures - needs further investigation
+    // const auto& upscaled_rgb = preprocessor_->getSrRgbUpscaled();
+    // sensor::buildFrameData(raw->depth.data(), upscaled_rgb.data(), *frame, d_min, d_max);
     sensor::buildFrameData(raw->depth.data(), raw->rgb.data(), *frame, d_min, d_max);
     sensor::computeNormals(*frame);
     

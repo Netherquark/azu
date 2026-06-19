@@ -10,6 +10,41 @@ namespace sensor {
 namespace sr {
 
 // ---------------------------------------------------------------------------
+// Buffer management — plain static with mutex; thread_local is wrong here
+// because the AMD ROCm driver context is per-process not per-thread.
+// ---------------------------------------------------------------------------
+struct HipBufferRAII {
+    uint8_t* d_in  = nullptr;
+    uint8_t* d_out = nullptr;
+    size_t   size  = 0;
+    std::mutex mtx;
+
+    void resize(size_t req) {
+        if (size == req) return;
+        if (d_in)  (void)hipFree(d_in);
+        if (d_out) (void)hipFree(d_out);
+        d_in = d_out = nullptr; size = 0;
+        hipError_t r1 = hipMalloc(&d_in,  req);
+        hipError_t r2 = hipMalloc(&d_out, req);
+        if (r1 != hipSuccess || r2 != hipSuccess) {
+            fprintf(stderr, "[EASU-HIP] hipMalloc failed: %s\n",
+                    hipGetErrorString(r1 != hipSuccess ? r1 : r2));
+            if (d_in)  { hipFree(d_in);  d_in  = nullptr; }
+            if (d_out) { hipFree(d_out); d_out = nullptr; }
+            return;
+        }
+        size = req;
+    }
+
+    ~HipBufferRAII() {
+        if (d_in)  (void)hipFree(d_in);
+        if (d_out) (void)hipFree(d_out);
+    }
+};
+
+static HipBufferRAII g_easu_buffers; // process-lifetime singleton
+
+// ---------------------------------------------------------------------------
 // FSR 1.0 EASU — Edge Adaptive Spatial Upsampling (GPU HIP)
 // ---------------------------------------------------------------------------
 
@@ -88,8 +123,6 @@ __global__ void easuKernel(const uint8_t* __restrict__ d_src,
         d_dst[dst_idx + ch] = (uint8_t)(fmaxf(0.0f, fminf(1.0f, val)) * 255.0f);
     }
 }
-
-static HipBufferRAII g_easu_buffers; // process-lifetime singleton
 
 void applyEASU_GPU(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst,
                    int src_width, int src_height, int scale) {
@@ -196,39 +229,6 @@ __global__ void rcasKernel(const uint8_t* __restrict__ d_in,
         d_out[out_idx + ch] = (uint8_t)(fmaxf(0.0f, fminf(1.0f, val)) * 255.0f);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Buffer management — plain static with mutex; thread_local is wrong here
-// because the AMD ROCm driver context is per-process not per-thread.
-// ---------------------------------------------------------------------------
-struct HipBufferRAII {
-    uint8_t* d_in  = nullptr;
-    uint8_t* d_out = nullptr;
-    size_t   size  = 0;
-    std::mutex mtx;
-
-    void resize(size_t req) {
-        if (size == req) return;
-        if (d_in)  (void)hipFree(d_in);
-        if (d_out) (void)hipFree(d_out);
-        d_in = d_out = nullptr; size = 0;
-        hipError_t r1 = hipMalloc(&d_in,  req);
-        hipError_t r2 = hipMalloc(&d_out, req);
-        if (r1 != hipSuccess || r2 != hipSuccess) {
-            fprintf(stderr, "[RCAS-HIP] hipMalloc failed: %s\n",
-                    hipGetErrorString(r1 != hipSuccess ? r1 : r2));
-            if (d_in)  { hipFree(d_in);  d_in  = nullptr; }
-            if (d_out) { hipFree(d_out); d_out = nullptr; }
-            return;
-        }
-        size = req;
-    }
-
-    ~HipBufferRAII() {
-        if (d_in)  (void)hipFree(d_in);
-        if (d_out) (void)hipFree(d_out);
-    }
-};
 
 static HipBufferRAII g_rcas_buffers; // process-lifetime singleton
 

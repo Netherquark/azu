@@ -33,17 +33,20 @@ public:
     void process(RawFrame& raw, cudaStream_t cuda_stream, float min_depth_m, float max_depth_m);
     void setSrScale(int scale) { sr_scale_ = scale; }
     int getSrScale() const { return sr_scale_; }
+    const std::vector<uint8_t>& getSrRgbUpscaled() const { return sr_rgb_upscaled_; }
 
 private:
     int sr_scale_ = 2; // Default 2x upscaling
     std::vector<float>    ema_buf_m_;
-    std::vector<uint8_t>  sr_rgb_;
+    std::vector<uint8_t>  sr_rgb_; // For guidance (original resolution)
+    std::vector<uint8_t>  sr_rgb_upscaled_; // For TSDF texturing (upscaled)
     std::vector<uint8_t>  rgb_scratch_;
     std::vector<float>    guidance_luma_;
     std::vector<uint16_t> depth_scratch_;
 
     void preprocessRgb(std::vector<uint8_t>& rgb);
     void buildSuperResolutionGuidance(const std::vector<uint8_t>& rgb);
+    void applySuperResolutionToRgb(const std::vector<uint8_t>& rgb); // Apply EASU+RCAS for TSDF
     void denoiseDepthSpatial(std::vector<uint16_t>& depth, float min_depth_m, float max_depth_m);
     void applyDepthEma(std::vector<uint16_t>& depth, float min_depth_m, float max_depth_m);
     void fillDepthHoles(std::vector<uint16_t>& depth, float min_depth_m, float max_depth_m);
