@@ -14,6 +14,7 @@
 #include <QScrollArea>
 #include <QSlider>
 #include "gui/NavigationGizmo.h"
+#include "utils/Logger.h"
 
 namespace kfusion {
 namespace gui {
@@ -320,7 +321,7 @@ void ControlPanel::onPresetChanged(int index) {
         h.tsdf.voxel_size = 0.003f;
         h.tsdf.resolution = 512;
         h.tsdf.truncation = 0.010f;
-        h.max_depth = 1.2f;
+        h.max_depth = 1.5f;
         h.icp.dist_threshold = 0.05f;
         h.icp.angle_threshold = 45.0f;
         h.icp.max_iterations[2] = 20;
@@ -336,10 +337,10 @@ void ControlPanel::onPresetChanged(int index) {
         h.icp.max_iterations[1] = 15;
         h.icp.max_iterations[0] = 10;
     } else if (index == 3) { // Room
-        h.tsdf.voxel_size = 0.025f;
-        h.tsdf.resolution = 512;
+        h.tsdf.voxel_size = 0.030f;
+        h.tsdf.resolution = 256;
         h.tsdf.truncation = 0.100f;
-        h.icp.dist_threshold = 0.25f;
+        h.icp.dist_threshold = 0.20f;
         h.icp.angle_threshold = 60.0f;
         h.max_depth = 8.0f;
         h.icp.max_iterations[2] = 30;
@@ -359,9 +360,8 @@ void ControlPanel::onPresetChanged(int index) {
     }
 
     setHyperparams(h);
-    // Automatically apply when preset is chosen? 
-    // Usually better to let user review, but "apply" is often expected from presets.
-    // However, the user didn't ask for auto-apply, so I'll just set the UI values.
+    KFLOGF_INFO("ControlPanel", "Preset applied: %s", combo_presets_->currentText().toStdString().c_str());
+    emit hyperparamsApplyClicked();
 }
 
 } // namespace gui
