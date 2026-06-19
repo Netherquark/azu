@@ -3,6 +3,7 @@
 #include <cstring>
 #include <vector>
 #include <unordered_map>
+#include "utils/Logger.h"
 
 // Forward declarations/Includes for tinygltf
 #define TINYGLTF_IMPLEMENTATION
@@ -27,9 +28,12 @@ static Eigen::Vector3f toGLTF(const Eigen::Vector3f& v) {
 
 bool GLBExporter::write(const meshing::MeshData& input_mesh, const std::string& filepath) {
     if (input_mesh.empty()) {
-        std::cerr << "[GLB] Mesh is empty, nothing to export.\n";
+        KFLOG_WARN("GLBExport", "Mesh is empty, nothing to export.");
         return false;
     }
+
+    KFLOGF_INFO("GLBExport", "Starting export to %s", filepath.c_str());
+    KFLOGF_INFO("GLBExport", "Original mesh: %zu vertices, %zu indices", input_mesh.positions.size(), input_mesh.indices.size());
 
     meshing::MeshData mesh;
     // WELD VERTICES
@@ -72,6 +76,9 @@ bool GLBExporter::write(const meshing::MeshData& input_mesh, const std::string& 
     const size_t nidx  = mesh.indices.size();
     const bool has_normals = (mesh.normals.size() == nvert);
     const bool has_colors  = (mesh.colors.size() == nvert * 3);
+
+    KFLOGF_INFO("GLBExport", "Welded mesh: %zu vertices, %zu indices (has_normals=%d, has_colors=%d)", 
+                nvert, nidx, has_normals, has_colors);
 
     // ---------------------------------------------------------
     // Build binary buffer
@@ -144,6 +151,12 @@ bool GLBExporter::write(const meshing::MeshData& input_mesh, const std::string& 
     size_t idx_offset = buffer_data.size();
     appendBytes(mesh.indices.data(), nidx * sizeof(uint32_t));
     size_t idx_length = buffer_data.size() - idx_offset;
+
+    KFLOGF_DEBUG("GLBExport", "Buffer views constructed. Total binary payload: %zu bytes", buffer_data.size());
+    KFLOGF_DEBUG("GLBExport", "  Position: offset=%zu, length=%zu", pos_offset, pos_length);
+    if (has_normals) KFLOGF_DEBUG("GLBExport", "  Normal: offset=%zu, length=%zu", norm_offset, norm_length);
+    if (has_colors)  KFLOGF_DEBUG("GLBExport", "  Color: offset=%zu, length=%zu", col_offset, col_length);
+    KFLOGF_DEBUG("GLBExport", "  Indices: offset=%zu, length=%zu", idx_offset, idx_length);
 
     // ---------------------------------------------------------
     // Build GLTF model
@@ -271,14 +284,13 @@ bool GLBExporter::write(const meshing::MeshData& input_mesh, const std::string& 
         /*writeBinary=*/true);
 
     if (!ok) {
-        std::cerr << "[GLB] WriteGltfSceneToFile failed for: " << filepath << "\n";
-        if (!err.empty())  std::cerr << "  Error: " << err << "\n";
-        if (!warn.empty()) std::cerr << "  Warn:  " << warn << "\n";
+        KFLOGF_ERROR("GLBExport", "WriteGltfSceneToFile failed for: %s", filepath.c_str());
+        if (!err.empty())  KFLOGF_ERROR("GLBExport", "  Error: %s", err.c_str());
+        if (!warn.empty()) KFLOGF_WARN("GLBExport", "  Warn:  %s", warn.c_str());
         return false;
     }
 
-    std::cout << "[GLB] Exported " << nvert << " verts, "
-              << nidx/3 << " tris to: " << filepath << "\n";
+    KFLOGF_INFO("GLBExport", "Exported %zu verts, %zu tris to: %s", nvert, nidx/3, filepath.c_str());
     return true;
 }
 
