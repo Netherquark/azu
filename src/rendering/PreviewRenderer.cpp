@@ -218,7 +218,6 @@ void PreviewRenderer::uploadPointCloud(const sensor::FrameData& frame) {
         bool valid = (frame.depth_meters.size() > i) ? (frame.depth_meters[i] > 0.0f) : (v.norm() > 1e-6f);
         if (!valid || std::isnan(v.x()) || std::isnan(v.y()) || std::isnan(v.z())) continue;
 
-        const auto& v = frame.vertices[i];
         positions.push_back(v.x());
         positions.push_back(v.y());
         positions.push_back(v.z());
