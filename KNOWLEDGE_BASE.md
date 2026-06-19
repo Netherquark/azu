@@ -112,10 +112,10 @@ The system orchestrates four primary threads managed by `PipelineController`:
 - **Purpose**: Real-time Super Resolution and edge enhancement of the Kinect RGB feed.
 - **Algorithms**:
     - **CPU Path**: Pure C++ port of AMD's FidelityFX Contrast Adaptive Sharpening (FSR 1.0 CAS) math, parallelized via `OpenMP`.
-    - **GPU Path**: High-performance CUDA implementation of the CAS kernel, executing directly on the GPU to minimize host-device transfers.
+    - **GPU Path**: High-performance CUDA and HIP implementations of the CAS kernel, executing directly on the GPU to minimize host-device transfers.
 - **Performance**: Applies enhancement *in-place* ensuring geometric depth relationships map identically at 640x480.
 
-#### SignalConditioner.h / .cpp / SignalConditioner_cuda.cu
+#### SignalConditioner.h / .cpp / SignalConditioner_cuda.cu / SignalConditioner_hip.hip
 - **Purpose**: Depth denoising and structural filtering.
 - **Features**: Implements EMA temporal smoothing and Guided Filtering with the fixes detailed in the "Signal Conditioning" section above.
 
@@ -134,13 +134,13 @@ The system orchestrates four primary threads managed by `PipelineController`:
     - `ICPResult` now includes `valid_live_points`, `valid_model_points`, `projected_points`, `dist_filtered`, and `angle_filtered` to distinguish between sensor blackout, occlusion, or volume-limit rejections.
 - **Optimization**: All inner loops are parallelized using `OpenMP` for real-time tracking (30ms budget for CPU).
 
-#### ICPTracker_cuda.cu
-- **Purpose**: Fully GPU-resident tracking.
+#### ICPTracker_cuda.cu / ICPTracker_hip.hip
+- **Purpose**: Fully GPU-resident tracking (CUDA and HIP ROCm ports).
 - **Kernels**:
     - `computeHessianKernel`: Performs pose-aware point-to-plane correspondence and Jacobian accumulation in a single pass.
     - `reduceHessianKernel`: Block-based reduction for the $6 \times 6$ linear system.
     - `downsampleKernel`: GPU-based pyramid generation.
-- **Optimization**: Replaces the $O(N)$ CPU reduction with $O(\log N)$ parallel reduction. Uses shared memory and atomic operations for diagnostic counter accumulation.
+- **Optimization**: Replaces the $O(N)$ CPU reduction with $O(\log N)$ parallel reduction. Uses shared memory and atomic operations for diagnostic counter accumulation. Uses `__shfl_down_sync` in CUDA and `__shfl_down` in HIP.
 
 ---
 
@@ -157,7 +157,7 @@ The system orchestrates four primary threads managed by `PipelineController`:
 - **Concurrency**: Guarded by `std::shared_mutex`. Readers (Raycast/Mesh) use `shared_lock`, while Integrator uses `unique_lock`.
 - **Acceleration**: Systematic use of `OpenMP` pragmas.
 
-#### TSDFVolume_cuda.cu
+#### TSDFVolume_cuda.cu / TSDFVolume_hip.hip
 - **Purpose**: High-performance GPU-resident integration and raycasting.
 - **Kernels**:
     - `integrationKernel_PixelParallel`: **Image-Centric Integration**. Parallelizes over every depth pixel. Accurately updates only voxels within truncation via ray-marching. Uses `atomicAdd` for thread-safe weight accumulation.
@@ -171,12 +171,12 @@ The system orchestrates four primary threads managed by `PipelineController`:
 - **Purpose**: Polygonization of the TSDF volume.
 - **Key Functions**:
     - `extract()`: Polygonization kernel. Parallelized by voxel slices.
-- **Quality**:
-#### MarchingCubes_cuda.cu
-- **Purpose**: Multi-pass GPU Marching Cubes using **Thrust**.
+
+#### MarchingCubes_cuda.cu / MarchingCubes_hip.hip
+- **Purpose**: Multi-pass GPU Marching Cubes.
 - **Passes**:
     1. **Classify**: Determines triangle counts per voxel.
-    2. **Scan**: `thrust::exclusive_scan` to compute global offsets.
+    2. **Scan**: Prefix sum to compute global offsets (`thrust::exclusive_scan` for CUDA, host-side CPU loop for HIP to eliminate rocThrust dependency).
     3. **Generate**: Populates global vertex, normal, and color buffers.
 - **Performance**: Near-instantaneous extraction (< 2ms for 256³ grid).
 
@@ -252,7 +252,7 @@ The system orchestrates four primary threads managed by `PipelineController`:
 Following a rigorous adversarial review, the system has been hardened for production stability:
 
 ### 5.1 Hardened Concurrency & Resource Management
-- **Zero-Leak RAII GPU Memory**: Implemented `utils::CudaUniquePtr` (RAII wrapper) across `TSDFVolume`, `ICPTracker`, and `ModelFrame`. Manual `cudaMalloc`/`cudaFree` management is eliminated.
+- **Zero-Leak RAII GPU Memory**: Implemented `utils::CudaUniquePtr` and `utils::HipUniquePtr` (RAII wrappers) across `TSDFVolume`, `ICPTracker`, and `ModelFrame`. Manual memory management is eliminated.
 - **Automated Frame Recycling**: Refactored `KinectSensor` and `PipelineController` to use `std::shared_ptr` with custom recyclers. Frames are automatically returned to pools when their last reference drops, preventing OOM.
 - **Zero-Copy Mesh Data**: `SharedMesh` and `MeshData` now use `std::shared_ptr`. Multi-megabyte mesh transfers between extraction and rendering threads are now instantaneous pointer swaps.
 
@@ -262,11 +262,13 @@ Following a rigorous adversarial review, the system has been hardened for produc
 - **Ping-Pong Model Buffers**: Implemented efficient double-buffering for the tracking model in `PipelineController`, allowing tracking to proceed on a stable snapshot while integration updates the back-buffer.
 
 ### 5.3 Build System & Engineering
+- **Unified GPU Backend Selection**: The `CMakeLists.txt` now supports explicitly forcing the backend via `cmake -DGPU_BACKEND=AUTO|HIP|CUDA|CPU`. The `scripts/build.sh` wrapper simplifies this further (e.g., `./scripts/build.sh --hip`).
 - **Robust Dependency Discovery**: Hardened `CMakeLists.txt` with reliable `Qt5` discovery paths and proper implementation guards for headers like `tinygltf`.
 - **Ninja Build Integration**: Transitioned the primary build recommendation to **Ninja**, significantly reducing incremental compile times and improving build reliability on multi-core systems.
 - **Modernized Qt Build Pipeline**: Transitioned to `CMAKE_AUTOMOC`, `CMAKE_AUTOUIC`, and `CMAKE_AUTORCC`. All project headers are now explicitly tracked in the build target, ensuring robust Meta-Object Compiler (MOC) generation.
 
-### 5.4 GPU Path Hardening (Stability Rounds 1-5)
+### 5.4 GPU Path Hardening & AMD ROCm Support
+- **ROCm/HIP Migration**: Achieved full parity with the legacy CUDA path for AMD iGPUs (e.g., Vega 7/5650u). Uses HIP primitives (`__shfl_down`), native hipStream management, and avoids heavy dependencies like rocThrust by employing host-side prefix scans.
 - **Triple-Buffer Model Management**: Implemented a robust triple-buffering system for `ModelFrame` (Front/Back/Ready indices) in `PipelineController`. This eliminates race conditions between the Integration thread (writing the new model) and the Tracking thread (reading the stable model).
 - **CUDA/Host Sync Points**: Optimized synchronization barriers during pipeline Reset/Restart to prevent `cudaErrorInvalidDevice` or `cudaErrorIllegalAddress` during rapid UI state transitions.
 - **Kernel Robustness**: Fixed boundary conditions in `TSDFVolume_cuda.cu` and `ICPTracker_cuda.cu` that previously caused intermittent tracking failure or visual artifacts ("broken signals") when the sensor approached volume edges.
@@ -277,11 +279,11 @@ Following a rigorous adversarial review, the system has been hardened for produc
 
 - **Status**: **STABILIZED & OPTIMIZED**. The pipeline is now production-grade with zero known memory leaks and optimized high-concurrency throughput.
 - **Verified Fixes**:
-    - [x] RAII for all CUDA resources via `CudaUniquePtr`.
+    - [x] Full ROCm/HIP backend for AMD support (`gfx90c` target), with `GPU_BACKEND` toggles.
+    - [x] RAII for all GPU resources via `CudaUniquePtr` and `HipUniquePtr`.
     - [x] Eliminated redundant matrix inversions in `TSDFVolume`.
     - [x] Implemented zero-copy frame and mesh passing.
     - [x] Unified vertex extraction in `MarchingCubes`.
 - **Future Roadmap**:
     - Implement a `VoxelHash` backend for larger scale environments.
     - Add real-time loop closure detection (Pose Graph optimization).
-    - Migrate to Vulkan/Compute Shaders for cross-vendor support.

@@ -1,11 +1,26 @@
+# Build output directories
 build/
+build-hip/
+build-cpu/
+build-cuda/
+
+# Compiled objects
 *.o
 *.a
 *.so
-*.tar.gz
+
+# CMake generated
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
+
+# Binary
 KinectFusionQt
+
+# IDE / LSP caches
 .cache/
+compile_commands.json
+
+# Archives
+*.tar.gz
