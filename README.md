@@ -1,18 +1,18 @@
 # KinectFusionQt
 
 Real-time 3D scanning application using Kinect v1, volumetric TSDF reconstruction,
-and Unity-ready GLB export. Runs on Fedora 43 with optional CUDA acceleration.
+and Unity-ready GLB export. Runs on Fedora 43 with optional CUDA (NVIDIA) or HIP/ROCm (AMD) acceleration.
 
 ---
 
 ## Features
 
 - Live Kinect v1 capture via **libfreenect** (no OpenNI)
-- **High-Performance GPU Pipeline**: Fully GPU-resident architecture optimized for NVIDIA RTX 30/40/50 series GPUs.
+- **High-Performance GPU Pipeline**: Fully GPU-resident architecture optimized for NVIDIA (CUDA) and AMD (HIP/ROCm) GPUs.
 - **Image-Centric TSDF**: $O(W \times H)$ pixel-parallel integration for real-time fidelity.
-- **Real-Time Super Resolution**: CUDA-accelerated or OpenMP-parallelized AMD FidelityFX CAS filters for enhanced RGB clarity.
+- **Real-Time Super Resolution**: CUDA/HIP-accelerated or OpenMP-parallelized AMD FidelityFX CAS filters for enhanced RGB clarity.
 - **GPU-Resident ICP**: Multi-resolution tracking with block-reduced Hessian construction.
-- **Multi-Pass Marching Cubes**: Parallel mesh extraction via CUDA/Thrust (< 2ms per scan).
+- **Multi-Pass Marching Cubes**: Parallel mesh extraction via CUDA/Thrust or HIP/Host-Scan (< 2ms per scan).
 - **Navigation Gizmo**: Blender-style interactive 3D axis gizmo for orientation control.
 - **OpenGL 3.3** real-time preview (point cloud + mesh modes)
 - **PLY** (binary) and **GLB** (Unity-ready) export via tinygltf
@@ -46,12 +46,16 @@ sudo dnf install -y \
     pkgconf-pkg-config
 ```
 
-#### Optional: CUDA Acceleration
-If you have an NVIDIA GPU (RTX 30/40/50 series), install the CUDA toolkit:
+#### Optional: CUDA / HIP Acceleration
+**NVIDIA GPUs (CUDA):**
 ```bash
 sudo dnf install cuda
 ```
-Ensure `/usr/local/cuda/bin` is in your `PATH`.
+
+**AMD GPUs (ROCm/HIP):**
+```bash
+sudo dnf install rocm-hip rocm-opencl
+```
 
 ### 2. Cloning and Setup
 
@@ -80,32 +84,39 @@ sudo usermod -aG plugdev $USER
 
 ---
 
-### 3. Building the Project
+### 4. Building the Project
 
-The build system uses **CMake 3.18+** and is optimized for speed and reliability using **Ninja** and automated Qt tool handling (**AUTOMOC**).
+The build system supports auto-detecting your GPU, or explicitly forcing a specific backend. It uses **CMake 3.18+** and is optimized for speed using **Ninja**.
 
+**Using the build helper (Recommended):**
+```bash
+# Auto-detects HIP (AMD), then CUDA (NVIDIA), then CPU fallback
+./scripts/build.sh
+
+# Force a specific backend
+./scripts/build.sh --hip
+./scripts/build.sh --cuda
+./scripts/build.sh --cpu
+```
+The script will output the compiled binary in `build-hip/`, `build-cuda/`, `build-cpu/`, or `build/` respectively.
+
+**Manual CMake:**
 ```bash
 mkdir build && cd build
-
-# Recommended: Release build with Ninja
-cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release
+cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release -DGPU_BACKEND=AUTO
 ninja
-
-# Alternative: Standard Make build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
 ```
 
-**Note:** If you experience "undefined reference" errors after a `git pull`, it is highly recommended to perform a clean build (`rm -rf build/*`) to refresh the automated Qt metadata.
+**Note:** If you experience "undefined reference" errors after a `git pull`, it is highly recommended to perform a clean build (`./scripts/build.sh --clean`) to refresh the automated Qt metadata.
 
-**Note:** The CMake configuration will output a diagnostic summary at the end of the `cmake ..` step, showing which features (CUDA, OpenMP, etc.) are enabled.
+**Note:** The CMake configuration will output a diagnostic summary at the end of the `cmake` step, showing which GPU backend was selected.
 
 ---
 
 ## Usage
 
 1. **Connect Kinect v1** via USB before launching the application.
-2. Launch the scanner: `QT_QPA_PLATFORM=xcb ./KinectFusionQt --verbose` (from the `build` directory).
+2. Launch the scanner from your target build directory (e.g., `build-hip/`): `QT_QPA_PLATFORM=xcb ./build-hip/KinectFusionQt --verbose`
 3. Click **▶ Start Capture** — the pipeline will begin live tracking and volume integration.
 4. **Scan**: Move the Kinect slowly and steadily around your target object.
 5. **View**: Toggle between **Point Cloud** and **Mesh** modes to inspect quality in real-time.
@@ -159,12 +170,12 @@ Pipeline (GPU Resident)
    │         │                     │ updated pose
    │         └──────────────────────┤
    │                                ▼
-   └──► Integration ───────► Pixel-Parallel TSDF (CUDA)
+   └──► Integration ───────► Pixel-Parallel TSDF (CUDA / HIP)
                  │                   │
                  │               Raycast (GPU) → ModelFrame (VRAM)
                  │
                  ▼
-         Meshing Thread ──► GPU Marching Cubes (Thrust) ──► SharedMesh
+         Meshing Thread ──► GPU Marching Cubes ──► SharedMesh
                                                              │
                                                       ┌──────┴──────┐
                                                       ▼             ▼
@@ -199,8 +210,8 @@ Scale is **1 unit = 1 metre** throughout.
 | Tracking immediately lost | Ensure scene has enough texture/geometry; reduce motion speed; **Check `--verbose` logs for `inliers` and `model_pts`** |
 | Low FPS | Disable CUDA if GPU init fails; ensure Release build |
 | GLB doesn't import to Unity | Ensure Unity 2019.4+ which includes built-in GLTF support, or use GLTFast package |
-| Linker / Undefined Reference errors | Run `rm -rf build/*` and re-run `cmake .. -GNinja` to refresh Qt meta-object data |
-| CUDA build fails | Check `nvcc --version`; set `CMAKE_CUDA_ARCHITECTURES=86` for RTX 5070 |
+| Linker / Undefined Reference errors | Run `./scripts/build.sh --clean` to refresh Qt meta-object data |
+| CUDA/HIP build fails | Check GPU_BACKEND logs in CMake. Run `./scripts/build.sh --cpu` for software fallback |
 
 ---
 
