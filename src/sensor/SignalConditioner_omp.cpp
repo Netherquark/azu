@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iostream>
+#include <fstream>
 
 #ifdef CUDA_ENABLED
 #include <cuda_runtime.h>
@@ -32,8 +34,86 @@ constexpr float kGuidedSigmaDepth = 0.04f;
 constexpr float kRgbSigmaSpatial = 2.0f;
 constexpr float kRgbSigmaRange = 28.0f;
 
+// Logging infrastructure
+struct FilterStats {
+    int bilateral_filtered = 0;
+    int median_filtered = 0;
+    int hole_filled = 0;
+    int guided_filtered = 0;
+    int ema_reset = 0;
+    int ema_filtered = 0;
+    int boundary_clamps = 0;
+    int edge_pixels = 0;
+    float max_depth_delta = 0.0f;
+    float avg_depth_delta = 0.0f;
+};
+
+FilterStats g_stats;
+bool g_logging_enabled = false;
+std::ofstream g_log_file;
+
+void initLogging() {
+    const char* log_env = std::getenv("KFUSION_LOG");
+    if (log_env) {
+        std::string env_str(log_env);
+        for (auto& c : env_str) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (env_str == "debug" || env_str == "1" || env_str == "verbose") {
+            g_logging_enabled = true;
+            g_log_file.open("signal_conditioner_log.csv");
+            if (g_log_file.is_open()) {
+                g_log_file << "frame,bilateral_filtered,median_filtered,hole_filled,guided_filtered,ema_reset,ema_filtered,boundary_clamps,edge_pixels,max_depth_delta,avg_depth_delta\n";
+            }
+        }
+    }
+}
+
+void logFrameStats(int frame_id) {
+    if (!g_logging_enabled || !g_log_file.is_open()) return;
+    g_log_file << frame_id << ","
+               << g_stats.bilateral_filtered << ","
+               << g_stats.median_filtered << ","
+               << g_stats.hole_filled << ","
+               << g_stats.guided_filtered << ","
+               << g_stats.ema_reset << ","
+               << g_stats.ema_filtered << ","
+               << g_stats.boundary_clamps << ","
+               << g_stats.edge_pixels << ","
+               << g_stats.max_depth_delta << ","
+               << g_stats.avg_depth_delta << "\n";
+    g_log_file.flush();
+    // Reset stats for next frame
+    g_stats = FilterStats{};
+}
+
+// Reflect boundary handling to eliminate vertical banding
+inline int reflectCoord(int x, int max_val) {
+    if (x < 0) return -x - 1;
+    if (x >= max_val) return 2 * max_val - x - 1;
+    return x;
+}
+
 inline uint8_t clampToByte(float v) {
     return static_cast<uint8_t>(std::clamp(v, 0.0f, 255.0f));
+}
+
+// Edge detection for edge-aware filtering
+inline float computeDepthGradient(const std::vector<uint16_t>& depth, int x, int y, int w, int h) {
+    if (x <= 0 || x >= w - 1 || y <= 0 || y >= h - 1) return 1.0f; // Edge pixel
+    
+    float center = static_cast<float>(depth[y * w + x]);
+    float right = static_cast<float>(depth[y * w + (x + 1)]);
+    float left = static_cast<float>(depth[y * w + (x - 1)]);
+    float down = static_cast<float>(depth[(y + 1) * w + x]);
+    float up = static_cast<float>(depth[(y - 1) * w + x]);
+    
+    if (center == 0 || right == 0 || left == 0 || down == 0 || up == 0) return 1.0f; // Edge pixel
+    
+    float gx = std::abs(right - left);
+    float gy = std::abs(down - up);
+    float gradient = std::sqrt(gx * gx + gy * gy);
+    
+    // Normalize gradient to [0,1] range (typical depth range 0-2047)
+    return std::min(gradient / 100.0f, 1.0f);
 }
 
 inline float rgbLuma(const uint8_t* rgb) {
@@ -65,9 +145,9 @@ void medianBlur3x3(std::vector<uint8_t>& rgb) {
                 uint8_t window[9];
                 int count = 0;
                 for (int dy = -1; dy <= 1; ++dy) {
-                    const int sy = std::clamp(y + dy, 0, FRAME_H - 1);
+                    const int sy = reflectCoord(y + dy, FRAME_H);
                     for (int dx = -1; dx <= 1; ++dx) {
-                        const int sx = std::clamp(x + dx, 0, FRAME_W - 1);
+                        const int sx = reflectCoord(x + dx, FRAME_W);
                         window[count++] = rgb[(sy * FRAME_W + sx) * 3 + c];
                     }
                 }
@@ -78,6 +158,10 @@ void medianBlur3x3(std::vector<uint8_t>& rgb) {
     }
 
     rgb.swap(scratch);
+    if (g_logging_enabled) {
+        #pragma omp atomic
+        g_stats.median_filtered += FRAME_W * FRAME_H;
+    }
 }
 
 void bilateralDenoiseRgb(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst) {
@@ -95,9 +179,9 @@ void bilateralDenoiseRgb(const std::vector<uint8_t>& src, std::vector<uint8_t>& 
             float weight_sum = 0.0f;
 
             for (int dy = -kRgbBilateralRadius; dy <= kRgbBilateralRadius; ++dy) {
-                const int sy = std::clamp(y + dy, 0, FRAME_H - 1);
+                const int sy = reflectCoord(y + dy, FRAME_H);
                 for (int dx = -kRgbBilateralRadius; dx <= kRgbBilateralRadius; ++dx) {
-                    const int sx = std::clamp(x + dx, 0, FRAME_W - 1);
+                    const int sx = reflectCoord(x + dx, FRAME_W);
                     const int sample_idx = (sy * FRAME_W + sx) * 3;
                     const float spatial_dist_sq = static_cast<float>(dx * dx + dy * dy);
 
@@ -124,6 +208,10 @@ void bilateralDenoiseRgb(const std::vector<uint8_t>& src, std::vector<uint8_t>& 
                     : src[center_idx + c];
             }
         }
+    }
+    if (g_logging_enabled) {
+        #pragma omp atomic
+        g_stats.bilateral_filtered += FRAME_W * FRAME_H;
     }
 }
 
@@ -188,12 +276,24 @@ void SignalConditioner::process(RawFrame& raw, cudaStream_t cuda_stream, float m
 }
 
 void SignalConditioner::processCpu(RawFrame& raw, float min_depth_m, float max_depth_m) {
+    static int frame_counter = 0;
+    static bool logging_initialized = false;
+    
+    if (!logging_initialized) {
+        initLogging();
+        logging_initialized = true;
+    }
+    
     preprocessRgb(raw.rgb);
     buildSuperResolutionGuidance(raw.rgb);
     denoiseDepthSpatial(raw.depth, min_depth_m, max_depth_m);
     fillDepthHoles(raw.depth, min_depth_m, max_depth_m);
     guidedDepthFilter(raw.depth, min_depth_m, max_depth_m);
     applyDepthEma(raw.depth, min_depth_m, max_depth_m);
+    
+    if (g_logging_enabled) {
+        logFrameStats(frame_counter++);
+    }
 }
 
 void SignalConditioner::preprocessRgb(std::vector<uint8_t>& rgb) {
@@ -236,9 +336,9 @@ void SignalConditioner::denoiseDepthSpatial(std::vector<uint16_t>& depth, float 
             float window[9];
             int count = 0;
             for (int dy = -kDepthMedianRadius; dy <= kDepthMedianRadius; ++dy) {
-                const int sy = std::clamp(y + dy, 0, FRAME_H - 1);
+                const int sy = reflectCoord(y + dy, FRAME_H);
                 for (int dx = -kDepthMedianRadius; dx <= kDepthMedianRadius; ++dx) {
-                    const int sx = std::clamp(x + dx, 0, FRAME_W - 1);
+                    const int sx = reflectCoord(x + dx, FRAME_W);
                     const float sample_depth_m = rawDepthToMeters(depth[sy * FRAME_W + sx]);
                     if (!isValidDepthMeters(sample_depth_m, min_depth_m, max_depth_m)) {
                         continue;
@@ -255,6 +355,10 @@ void SignalConditioner::denoiseDepthSpatial(std::vector<uint16_t>& depth, float 
     }
 
     depth.swap(depth_scratch_);
+    if (g_logging_enabled) {
+        #pragma omp atomic
+        g_stats.median_filtered += FRAME_W * FRAME_H;
+    }
 }
 
 void SignalConditioner::applyDepthEma(std::vector<uint16_t>& depth, float min_depth_m, float max_depth_m) {
@@ -263,17 +367,71 @@ void SignalConditioner::applyDepthEma(std::vector<uint16_t>& depth, float min_de
         const float depth_m = rawDepthToMeters(depth[i]);
         if (!isValidDepthMeters(depth_m, min_depth_m, max_depth_m) || std::isnan(depth_m) || std::isinf(depth_m)) {
             ema_buf_m_[i] = 0.0f; // Prevent ghosting by resetting stale EMA values
+            if (g_logging_enabled) {
+                #pragma omp atomic
+                g_stats.ema_reset++;
+            }
             continue;
         }
 
         const float previous = ema_buf_m_[i];
         const float delta = std::abs(depth_m - previous);
-        const float filtered = (std::isnan(previous) || std::isinf(previous) || previous <= 0.0f || delta > kEmaJumpResetMeters)
-            ? depth_m
-            : (0.7f * depth_m + 0.3f * previous);
+        
+        // Improved EMA stability: check for temporal consistency with neighbors
+        bool reset_ema = (std::isnan(previous) || std::isinf(previous) || previous <= 0.0f || delta > kEmaJumpResetMeters);
+        
+        // Additional validation: if delta is suspiciously large, check neighboring pixels
+        if (!reset_ema && delta > kEmaJumpResetMeters * 0.5f) {
+            const int x = i % FRAME_W;
+            const int y = i / FRAME_W;
+            float neighbor_sum = 0.0f;
+            int neighbor_count = 0;
+            
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx == 0 && dy == 0) continue;
+                    const int nx = reflectCoord(x + dx, FRAME_W);
+                    const int ny = reflectCoord(y + dy, FRAME_H);
+                    const int ni = ny * FRAME_W + nx;
+                    const float nd = rawDepthToMeters(depth[ni]);
+                    if (isValidDepthMeters(nd, min_depth_m, max_depth_m)) {
+                        neighbor_sum += nd;
+                        neighbor_count++;
+                    }
+                }
+            }
+            
+            if (neighbor_count > 0) {
+                const float neighbor_avg = neighbor_sum / neighbor_count;
+                const float neighbor_delta = std::abs(depth_m - neighbor_avg);
+                // If current depth is very different from neighbors, reset EMA
+                if (neighbor_delta > kEmaJumpResetMeters) {
+                    reset_ema = true;
+                }
+            }
+        }
+        
+        const float filtered = reset_ema ? depth_m : (0.7f * depth_m + 0.3f * previous);
 
         ema_buf_m_[i] = filtered;
         depth[i] = metersToRawDepth(filtered);
+        
+        if (g_logging_enabled) {
+            #pragma omp atomic
+            g_stats.ema_filtered++;
+            if (reset_ema) {
+                #pragma omp atomic
+                g_stats.ema_reset++;
+            }
+            #pragma omp critical
+            {
+                g_stats.max_depth_delta = std::max(g_stats.max_depth_delta, delta);
+                g_stats.avg_depth_delta += delta;
+            }
+        }
+    }
+    if (g_logging_enabled && FRAME_W * FRAME_H > 0) {
+        g_stats.avg_depth_delta /= (FRAME_W * FRAME_H);
     }
 }
 
@@ -291,19 +449,16 @@ void SignalConditioner::fillDepthHoles(std::vector<uint16_t>& depth, float min_d
                 continue;
             }
 
-            float best_depth_m = 0.0f;
-            int best_dist_sq = (kHoleFillRadius + 1) * (kHoleFillRadius + 1) * 2;
+            // Edge-aware hole filling: use weighted average instead of nearest neighbor
+            float weighted_sum = 0.0f;
+            float weight_sum = 0.0f;
+            int valid_neighbors = 0;
 
             for (int dy = -kHoleFillRadius; dy <= kHoleFillRadius; ++dy) {
-                const int sy = y + dy;
-                if (sy < 0 || sy >= FRAME_H) {
-                    continue;
-                }
+                const int sy = reflectCoord(y + dy, FRAME_H);
                 for (int dx = -kHoleFillRadius; dx <= kHoleFillRadius; ++dx) {
-                    const int sx = x + dx;
-                    if (sx < 0 || sx >= FRAME_W || (dx == 0 && dy == 0)) {
-                        continue;
-                    }
+                    if (dx == 0 && dy == 0) continue;
+                    const int sx = reflectCoord(x + dx, FRAME_W);
 
                     const float candidate_m = rawDepthToMeters(depth[sy * FRAME_W + sx]);
                     if (!isValidDepthMeters(candidate_m, min_depth_m, max_depth_m)) {
@@ -311,15 +466,19 @@ void SignalConditioner::fillDepthHoles(std::vector<uint16_t>& depth, float min_d
                     }
 
                     const int dist_sq = dx * dx + dy * dy;
-                    if (dist_sq < best_dist_sq) {
-                        best_dist_sq = dist_sq;
-                        best_depth_m = candidate_m;
-                    }
+                    const float weight = 1.0f / (dist_sq + 1.0f); // Inverse distance weighting
+                    weighted_sum += weight * candidate_m;
+                    weight_sum += weight;
+                    valid_neighbors++;
                 }
             }
 
-            if (best_depth_m > 0.0f) {
-                depth_scratch_[idx] = metersToRawDepth(best_depth_m);
+            if (valid_neighbors > 0 && weight_sum > 1e-6f) {
+                depth_scratch_[idx] = metersToRawDepth(weighted_sum / weight_sum);
+                if (g_logging_enabled) {
+                    #pragma omp atomic
+                    g_stats.hole_filled++;
+                }
             }
         }
     }
@@ -352,20 +511,21 @@ void SignalConditioner::guidedDepthFilter(std::vector<uint16_t>& depth, float mi
             }
 
             const float center_luma = guidance_luma_[idx];
+            
+            // Edge-aware filtering: compute depth gradient to reduce filter strength near edges
+            const float edge_strength = computeDepthGradient(depth, x, y, FRAME_W, FRAME_H);
+            if (g_logging_enabled && edge_strength > 0.5f) {
+                #pragma omp atomic
+                g_stats.edge_pixels++;
+            }
 
             float sum_weights = 0.0f;
             float sum_depth = 0.0f;
 
             for (int dy = -kGuidedRadius; dy <= kGuidedRadius; ++dy) {
-                const int sy = y + dy;
-                if (sy < 0 || sy >= FRAME_H) {
-                    continue;
-                }
+                const int sy = reflectCoord(y + dy, FRAME_H);
                 for (int dx = -kGuidedRadius; dx <= kGuidedRadius; ++dx) {
-                    const int sx = x + dx;
-                    if (sx < 0 || sx >= FRAME_W) {
-                        continue;
-                    }
+                    const int sx = reflectCoord(x + dx, FRAME_W);
 
                     const int nidx = sy * FRAME_W + sx;
                     const float neighbor_depth = rawDepthToMeters(depth[nidx]);
@@ -380,7 +540,10 @@ void SignalConditioner::guidedDepthFilter(std::vector<uint16_t>& depth, float mi
                     const float spatial_weight = std::exp(-spatial_dist_sq / (2.0f * kGuidedRadius * kGuidedRadius));
                     const float luma_weight = std::exp(-(guidance_delta * guidance_delta) / (2.0f * kGuidedSigmaLuma * kGuidedSigmaLuma + 0.01f));
                     const float depth_weight = std::exp(-(depth_delta * depth_delta) / (2.0f * kGuidedSigmaDepth * kGuidedSigmaDepth + 0.01f));
-                    const float weight = spatial_weight * luma_weight * depth_weight;
+                    
+                    // Edge-aware: reduce filter strength near edges to prevent blurring
+                    const float edge_factor = 1.0f - edge_strength * 0.5f; // Reduce by up to 50% near edges
+                    const float weight = spatial_weight * luma_weight * depth_weight * edge_factor;
 
                     sum_weights += weight;
                     sum_depth += weight * neighbor_depth;
@@ -389,6 +552,13 @@ void SignalConditioner::guidedDepthFilter(std::vector<uint16_t>& depth, float mi
 
             if (sum_weights > 1e-6f) {
                 depth_scratch_[idx] = metersToRawDepth(sum_depth / sum_weights);
+                if (g_logging_enabled) {
+                    #pragma omp atomic
+                    g_stats.guided_filtered++;
+                }
+            } else {
+                // Fallback to original depth if filtering failed
+                depth_scratch_[idx] = depth[idx];
             }
         }
     }

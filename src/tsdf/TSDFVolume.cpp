@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <fstream>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -10,6 +11,45 @@
 
 namespace kfusion {
 namespace tsdf {
+
+// TSDF logging infrastructure
+struct TSDFStats {
+    int depth_filtered = 0;
+    int voxels_updated = 0;
+    int color_updates = 0;
+    int truncation_clamped = 0;
+    float max_sdf = 0.0f;
+    float avg_sdf = 0.0f;
+};
+
+TSDFStats g_tsdf_stats;
+bool g_tsdf_logging_enabled = false;
+std::ofstream g_tsdf_log_file;
+
+void initTSDFLogging() {
+    const char* log_env = std::getenv("AZU_TSDF_LOG");
+    if (log_env && std::string(log_env) == "1") {
+        g_tsdf_logging_enabled = true;
+        g_tsdf_log_file.open("tsdf_integration_log.csv");
+        if (g_tsdf_log_file.is_open()) {
+            g_tsdf_log_file << "frame,depth_filtered,voxels_updated,color_updates,truncation_clamped,max_sdf,avg_sdf\n";
+        }
+    }
+}
+
+void logTSDFStats(int frame_id) {
+    if (!g_tsdf_logging_enabled || !g_tsdf_log_file.is_open()) return;
+    g_tsdf_log_file << frame_id << ","
+               << g_tsdf_stats.depth_filtered << ","
+               << g_tsdf_stats.voxels_updated << ","
+               << g_tsdf_stats.color_updates << ","
+               << g_tsdf_stats.truncation_clamped << ","
+               << g_tsdf_stats.max_sdf << ","
+               << g_tsdf_stats.avg_sdf << "\n";
+    g_tsdf_log_file.flush();
+    // Reset stats for next frame
+    g_tsdf_stats = TSDFStats{};
+}
 
 TSDFVolume::TSDFVolume(const TSDFParams& params)
     : params_(params)
@@ -57,6 +97,14 @@ void TSDFVolume::integrate(const float*           depth_meters,
                            float min_depth,
                            float max_depth)
 {
+    static int frame_counter = 0;
+    static bool logging_initialized = false;
+    
+    if (!logging_initialized) {
+        initTSDFLogging();
+        logging_initialized = true;
+    }
+    
     std::unique_lock<std::shared_mutex> lk(mutex_);
 #ifdef CUDA_ENABLED
     if (gpu_enabled_) {
@@ -108,6 +156,10 @@ void TSDFVolume::integrate(const float*           depth_meters,
     integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height, min_depth, max_depth);
 #endif
     integrated_frames_.fetch_add(1);
+    
+    if (g_tsdf_logging_enabled) {
+        logTSDFStats(frame_counter++);
+    }
 }
 
 void TSDFVolume::integrateCPU(const float*           depth_meters,
@@ -139,7 +191,13 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
             // Filter invalid depths: too close, too far, or NaN/inf
             // Use 0.1f as minimum threshold (original behavior) to avoid regression
             if (d_meas < 0.1f || d_meas > max_depth || 
-                std::isnan(d_meas) || std::isinf(d_meas)) continue;
+                std::isnan(d_meas) || std::isinf(d_meas)) {
+                if (g_tsdf_logging_enabled) {
+                    #pragma omp atomic
+                    g_tsdf_stats.depth_filtered++;
+                }
+                continue;
+            }
 
             // Ray direction in camera space
             Eigen::Vector3f ray_cam((x - cx) / fx, (y - cy) / fy, 1.0f);
@@ -176,6 +234,14 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
 
                 float tsdf_new = std::min(1.0f, sdf / trunc);
                 if (std::isnan(tsdf_new) || std::isinf(tsdf_new)) continue;
+                
+                if (tsdf_new >= 1.0f || tsdf_new <= -1.0f) {
+                    if (g_tsdf_logging_enabled) {
+                        #pragma omp atomic
+                        g_tsdf_stats.truncation_clamped++;
+                    }
+                }
+                
                 int vidx = idx(vx, vy, vz);
                 Voxel& vox = voxels_[vidx];
 
@@ -188,6 +254,16 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
 
                 vox.tsdf   = next_tsdf;
                 vox.weight = w_sum;
+                
+                if (g_tsdf_logging_enabled) {
+                    #pragma omp atomic
+                    g_tsdf_stats.voxels_updated++;
+                    #pragma omp critical
+                    {
+                        g_tsdf_stats.max_sdf = std::max(g_tsdf_stats.max_sdf, std::abs(sdf));
+                        g_tsdf_stats.avg_sdf += std::abs(sdf);
+                    }
+                }
 
                 if (rgb && sdf > -trunc * 0.5f) {
                     int pidx = (y * width + x) * 3;
@@ -195,9 +271,18 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
                     vox.r = static_cast<uint8_t>(std::round((static_cast<float>(vox.r) * w_old + static_cast<float>(rgb[pidx+0])) / (w_old + 1.0f + 1e-6f)));
                     vox.g = static_cast<uint8_t>(std::round((static_cast<float>(vox.g) * w_old + static_cast<float>(rgb[pidx+1])) / (w_old + 1.0f + 1e-6f)));
                     vox.b = static_cast<uint8_t>(std::round((static_cast<float>(vox.b) * w_old + static_cast<float>(rgb[pidx+2])) / (w_old + 1.0f + 1e-6f)));
+                    
+                    if (g_tsdf_logging_enabled) {
+                        #pragma omp atomic
+                        g_tsdf_stats.color_updates++;
+                    }
                 }
             }
         }
+    }
+    
+    if (g_tsdf_logging_enabled && width * height > 0) {
+        g_tsdf_stats.avg_sdf /= (width * height);
     }
 }
 

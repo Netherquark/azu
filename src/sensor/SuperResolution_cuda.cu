@@ -13,11 +13,18 @@ namespace sr {
 // FSR 1.0 RCAS — CUDA Kernel
 // ---------------------------------------------------------------------------
 
+// Reflect boundary handling to eliminate vertical banding
+__device__ static inline int reflectCoordCAS(int x, int max_val) {
+    if (x < 0) return -x - 1;
+    if (x >= max_val) return 2 * max_val - x - 1;
+    return x;
+}
+
 __device__ static inline void rcasGetPixel(const uint8_t* img,
                                             int x, int y, int w, int h,
                                             float out[3]) {
-    x = max(0, min(x, w - 1));
-    y = max(0, min(y, h - 1));
+    x = reflectCoordCAS(x, w);
+    y = reflectCoordCAS(y, h);
     const int idx = (y * w + x) * 3;
     out[0] = (float)img[idx + 0] * (1.0f / 255.0f);
     out[1] = (float)img[idx + 1] * (1.0f / 255.0f);

@@ -1,5 +1,8 @@
 # KinectFusion Signal Conditioning Knowledge Base
 
+**⚠️ CUDA/NVIDIA Path Status: DEPRECATED**
+The CUDA (NVIDIA) code path is currently **untested and may not compile**. Due to lack of access to NVIDIA hardware for testing, the CUDA backend cannot be verified. The CUDA code remains in the codebase but is not actively maintained. Use the HIP (AMD) or CPU backend instead.
+
 This document details the architectural fixes and mathematical optimizations integrated into the `signal-conditioning-pipeline` branch. The focus of this branch is to enhance the spatial resolution of the 3D asset generation process and eliminate visual and geometric artifacts caused by earlier signal-processing implementations.
 
 ## 1. Volumetric Asset Resolution Enhancement (TSDF)
@@ -114,6 +117,7 @@ The system orchestrates four primary threads managed by `PipelineController`:
     - **CPU Path**: Pure C++ port of AMD's FidelityFX Contrast Adaptive Sharpening (FSR 1.0 CAS) math, parallelized via `OpenMP`.
     - **GPU Path**: High-performance CUDA and HIP implementations of the CAS kernel, executing directly on the GPU to minimize host-device transfers.
 - **Performance**: Applies enhancement *in-place* ensuring geometric depth relationships map identically at 640x480.
+- **Configuration**: CAS sharpness parameter set to 0.5 (conservative) to avoid over-sharpening artifacts while maintaining edge enhancement.
 
 #### SignalConditioner.h / .cpp / SignalConditioner_cuda.cu / SignalConditioner_hip.hip
 - **Purpose**: Depth denoising and structural filtering.

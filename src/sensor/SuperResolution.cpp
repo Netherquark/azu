@@ -29,11 +29,17 @@ namespace sr {
 //     out_c = (c_c + w*(a_c+b_c+d_c+e_c)) / (1 + 4*w)
 // ---------------------------------------------------------------------------
 
+inline int reflectCoord(int x, int max_val) {
+    if (x < 0) return -x - 1;
+    if (x >= max_val) return 2 * max_val - x - 1;
+    return x;
+}
+
 inline void getPixelF(const std::vector<uint8_t>& img,
                       int x, int y, int w, int h,
                       float out[3]) {
-    x = std::clamp(x, 0, w - 1);
-    y = std::clamp(y, 0, h - 1);
+    x = reflectCoord(x, w);
+    y = reflectCoord(y, h);
     int idx = (y * w + x) * 3;
     out[0] = img[idx + 0] / 255.0f;
     out[1] = img[idx + 1] / 255.0f;

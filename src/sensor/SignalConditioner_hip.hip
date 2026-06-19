@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iostream>
 
 #ifndef HIP_CHECK_LAST
 #define HIP_CHECK_LAST() \
@@ -31,6 +32,33 @@ namespace {
     constexpr float kGuidedSigmaDepth = 0.04f;
     constexpr float kRgbSigmaSpatial = 2.0f;
     constexpr float kRgbSigmaRange = 28.0f;
+
+    // Reflect boundary handling to eliminate vertical banding
+    __device__ inline int reflectCoordHIP(int x, int max_val) {
+        if (x < 0) return -x - 1;
+        if (x >= max_val) return 2 * max_val - x - 1;
+        return x;
+    }
+
+    // Edge detection for edge-aware filtering
+    __device__ inline float computeDepthGradientHIP(const uint16_t* depth, int x, int y, int w, int h) {
+        if (x <= 0 || x >= w - 1 || y <= 0 || y >= h - 1) return 1.0f; // Edge pixel
+        
+        float center = (float)depth[y * w + x];
+        float right = (float)depth[y * w + (x + 1)];
+        float left = (float)depth[y * w + (x - 1)];
+        float down = (float)depth[(y + 1) * w + x];
+        float up = (float)depth[(y - 1) * w + x];
+        
+        if (center == 0.0f || right == 0.0f || left == 0.0f || down == 0.0f || up == 0.0f) return 1.0f; // Edge pixel
+        
+        float gx = fabsf(right - left);
+        float gy = fabsf(down - up);
+        float gradient = sqrtf(gx * gx + gy * gy);
+        
+        // Normalize gradient to [0,1] range (typical depth range 0-2047)
+        return fminf(gradient / 100.0f, 1.0f);
+    }
 
     __device__ inline float rgbLumaGPU(uint8_t r, uint8_t g, uint8_t b) {
         return 0.299f * (float)r + 0.587f * (float)g + 0.114f * (float)b;
@@ -115,9 +143,9 @@ __global__ void bilateralDenoiseRgbKernel(const uint8_t* src, uint8_t* dst, int 
     float accum_r = 0, accum_g = 0, accum_b = 0, weight_sum = 0;
 
     for (int dy = -kRgbBilateralRadius; dy <= kRgbBilateralRadius; ++dy) {
-        int sy = max(0, min(y + dy, h - 1));
+        int sy = reflectCoordHIP(y + dy, h);
         for (int dx = -kRgbBilateralRadius; dx <= kRgbBilateralRadius; ++dx) {
-            int sx = max(0, min(x + dx, w - 1));
+            int sx = reflectCoordHIP(x + dx, w);
             int sidx = (sy * w + sx) * 3;
 
             float sr = src[sidx + 0];
@@ -153,9 +181,9 @@ __global__ void medianBlur3x3Kernel(const uint8_t* src, uint8_t* dst, int w, int
         uint8_t window[9];
         int count = 0;
         for (int dy = -1; dy <= 1; ++dy) {
-            int sy = max(0, min(y + dy, h - 1));
+            int sy = reflectCoordHIP(y + dy, h);
             for (int dx = -1; dx <= 1; ++dx) {
-                int sx = max(0, min(x + dx, w - 1));
+                int sx = reflectCoordHIP(x + dx, w);
                 window[count++] = src[(sy * w + sx) * 3 + c];
             }
         }
@@ -197,9 +225,9 @@ __global__ void denoiseDepthSpatialKernel(const uint16_t* src, uint16_t* dst, in
     float window[9];
     int count = 0;
     for (int dy = -kDepthMedianRadius; dy <= kDepthMedianRadius; ++dy) {
-        int sy = max(0, min(y + dy, h - 1));
+        int sy = reflectCoordHIP(y + dy, h);
         for (int dx = -kDepthMedianRadius; dx <= kDepthMedianRadius; ++dx) {
-            int sx = max(0, min(x + dx, w - 1));
+            int sx = reflectCoordHIP(x + dx, w);
             float d = rawDepthToMetersGPU(src[sy * w + sx]);
             if (d >= min_d && d <= max_d) {
                 window[count++] = d;
@@ -235,9 +263,42 @@ __global__ void applyDepthEmaKernel(uint16_t* depth, float* ema_buf, int w, int 
 
     float previous = ema_buf[idx];
     float delta = fabsf(d - previous);
-    float filtered = (isnan(previous) || isinf(previous) || previous <= 0.0f || delta > kEmaJumpResetMeters)
-        ? d
-        : (0.7f * d + 0.3f * previous);
+    
+    // Improved EMA stability: check for temporal consistency with neighbors
+    bool reset_ema = (isnan(previous) || isinf(previous) || previous <= 0.0f || delta > kEmaJumpResetMeters);
+    
+    // Additional validation: if delta is suspiciously large, check neighboring pixels
+    if (!reset_ema && delta > kEmaJumpResetMeters * 0.5f) {
+        int x = idx % w;
+        int y = idx / w;
+        float neighbor_sum = 0.0f;
+        int neighbor_count = 0;
+        
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dy == 0) continue;
+                int nx = reflectCoordHIP(x + dx, w);
+                int ny = reflectCoordHIP(y + dy, h);
+                int ni = ny * w + nx;
+                float nd = rawDepthToMetersGPU(depth[ni]);
+                if (nd >= min_d && nd <= max_d) {
+                    neighbor_sum += nd;
+                    neighbor_count++;
+                }
+            }
+        }
+        
+        if (neighbor_count > 0) {
+            float neighbor_avg = neighbor_sum / neighbor_count;
+            float neighbor_delta = fabsf(d - neighbor_avg);
+            // If current depth is very different from neighbors, reset EMA
+            if (neighbor_delta > kEmaJumpResetMeters) {
+                reset_ema = true;
+            }
+        }
+    }
+    
+    float filtered = reset_ema ? d : (0.7f * d + 0.3f * previous);
 
     ema_buf[idx] = filtered;
     depth[idx] = metersToRawDepthGPU(filtered);
@@ -254,29 +315,30 @@ __global__ void fillDepthHolesKernel(const uint16_t* src, uint16_t* dst, int w, 
         return;
     }
 
-    float best_d = 0.0f;
-    int best_dist_sq = (kHoleFillRadius + 1) * (kHoleFillRadius + 1) * 2;
+    // Edge-aware hole filling: use weighted average instead of nearest neighbor
+    float weighted_sum = 0.0f;
+    float weight_sum = 0.0f;
+    int valid_neighbors = 0;
 
     for (int dy = -kHoleFillRadius; dy <= kHoleFillRadius; ++dy) {
-        int sy = y + dy;
-        if (sy < 0 || sy >= h) continue;
+        int sy = reflectCoordHIP(y + dy, h);
         for (int dx = -kHoleFillRadius; dx <= kHoleFillRadius; ++dx) {
-            int sx = x + dx;
-            if (sx < 0 || sx >= w || (dx == 0 && dy == 0)) continue;
+            if (dx == 0 && dy == 0) continue;
+            int sx = reflectCoordHIP(x + dx, w);
 
             float candidate = rawDepthToMetersGPU(src[sy * w + sx]);
             if (candidate >= min_d && candidate <= max_d) {
                 int dist_sq = dx * dx + dy * dy;
-                if (dist_sq < best_dist_sq) {
-                    best_dist_sq = dist_sq;
-                    best_d = candidate;
-                }
+                float weight = 1.0f / (dist_sq + 1.0f); // Inverse distance weighting
+                weighted_sum += weight * candidate;
+                weight_sum += weight;
+                valid_neighbors++;
             }
         }
     }
 
-    if (best_d > 0.0f) {
-        dst[idx] = metersToRawDepthGPU(best_d);
+    if (valid_neighbors > 0 && weight_sum > 1e-6f) {
+        dst[idx] = metersToRawDepthGPU(weighted_sum / weight_sum);
     } else {
         dst[idx] = 0;
     }
@@ -299,15 +361,17 @@ __global__ void guidedDepthFilterKernel(const uint16_t* depth, uint16_t* dst, co
     }
 
     float center_l = luma[idx];
+    
+    // Edge-aware filtering: compute depth gradient to reduce filter strength near edges
+    float edge_strength = computeDepthGradientHIP(depth, x, y, w, h);
+
     float sum_w = 0.0f;
     float sum_d = 0.0f;
 
     for (int dy = -kGuidedRadius; dy <= kGuidedRadius; ++dy) {
-        int sy = y + dy;
-        if (sy < 0 || sy >= h) continue;
+        int sy = reflectCoordHIP(y + dy, h);
         for (int dx = -kGuidedRadius; dx <= kGuidedRadius; ++dx) {
-            int sx = x + dx;
-            if (sx < 0 || sx >= w) continue;
+            int sx = reflectCoordHIP(x + dx, w);
 
             int nidx = sy * w + sx;
             float nd = rawDepthToMetersGPU(depth[nidx]);
@@ -317,9 +381,13 @@ __global__ void guidedDepthFilterKernel(const uint16_t* depth, uint16_t* dst, co
             float l_delta = luma[nidx] - center_l;
             float d_delta = nd - center_d;
 
-            float weight = expf(-spatial_dist_sq / (2.0f * kGuidedRadius * kGuidedRadius)) *
-                           expf(-(l_delta * l_delta) / (2.0f * kGuidedSigmaLuma * kGuidedSigmaLuma + 0.01f)) *
-                           expf(-(d_delta * d_delta) / (2.0f * kGuidedSigmaDepth * kGuidedSigmaDepth + 0.01f));
+            float spatial_weight = expf(-spatial_dist_sq / (2.0f * kGuidedRadius * kGuidedRadius));
+            float luma_weight = expf(-(l_delta * l_delta) / (2.0f * kGuidedSigmaLuma * kGuidedSigmaLuma + 0.01f));
+            float depth_weight = expf(-(d_delta * d_delta) / (2.0f * kGuidedSigmaDepth * kGuidedSigmaDepth + 0.01f));
+            
+            // Edge-aware: reduce filter strength near edges to prevent blurring
+            float edge_factor = 1.0f - edge_strength * 0.5f; // Reduce by up to 50% near edges
+            float weight = spatial_weight * luma_weight * depth_weight * edge_factor;
 
             sum_w += weight;
             sum_d += weight * nd;

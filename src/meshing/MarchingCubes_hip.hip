@@ -464,10 +464,11 @@ __global__ void generateMeshKernel(
             tsdf::VoxelGPU& v1 = get_voxel(x+c_corner_offsets[c1][0], y+c_corner_offsets[c1][1], z+c_corner_offsets[c1][2]);
             tsdf::VoxelGPU& v2 = get_voxel(x+c_corner_offsets[c2][0], y+c_corner_offsets[c2][1], z+c_corner_offsets[c2][2]);
             // Colors are stored directly in 0-255 range (no denormalization)
+            // Match CPU behavior: simple cast without clamping
             edge_c[i] = make_uchar3(
-                (uint8_t)fminf(255.0f, fmaxf(0.0f, v1.r + t * (v2.r - v1.r))),
-                (uint8_t)fminf(255.0f, fmaxf(0.0f, v1.g + t * (v2.g - v1.g))),
-                (uint8_t)fminf(255.0f, fmaxf(0.0f, v1.b + t * (v2.b - v1.b)))
+                (uint8_t)(v1.r + t * (v2.r - v1.r)),
+                (uint8_t)(v1.g + t * (v2.g - v1.g)),
+                (uint8_t)(v1.b + t * (v2.b - v1.b))
             );
         }
     }
@@ -477,7 +478,8 @@ __global__ void generateMeshKernel(
     int current_tri = offset;
     for (int i = 0; i < 16 && c_tri_table[cube_idx][i] != -1; i += 3) {
         if (current_tri >= max_tris) break;
-        for (int k = 0; k < 3; ++k) {
+        // Reverse winding order (2, 1, 0 instead of 0, 1, 2) to fix front-face culling
+        for (int k = 2; k >= 0; --k) {
             int e = c_tri_table[cube_idx][i + k];
             out_v[out_idx_start + v_count] = edge_v[e];
             out_n[out_idx_start + v_count] = edge_n[e];

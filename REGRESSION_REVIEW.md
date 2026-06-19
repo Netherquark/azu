@@ -1,6 +1,23 @@
 # Regression & Stability Review: Resolved
 
+**⚠️ CUDA/NVIDIA Path Status: DEPRECATED**
+The CUDA (NVIDIA) code path is currently **untested and may not compile**. Due to lack of access to NVIDIA hardware for testing, the CUDA backend cannot be verified. The CUDA code remains in the codebase but is not actively maintained. Use the HIP (AMD) or CPU backend instead.
+
 This document tracks the resolution of previously identified functional regressions and logical inconsistencies introduced during the transition to the unified `Camera` system and the high-performance pipeline refactor.
+
+## 7. Resolved: GLB Color Export Issues (CPU and GPU Paths)
+**Status: FIXED**
+- **Problem:** GLB exports had color issues on both CPU and GPU paths. CPU path colors were too dark due to integer truncation during color averaging. GPU path colors were broken because VoxelGPU stored colors as floats in the 0-255 range instead of the normalized 0-1 range, causing incorrect interpolation and output.
+- **Resolution:**
+  - **CPU Path:** Changed color averaging in `TSDFVolume::integrateCPU` to use float arithmetic with `std::round()` instead of direct uint8_t truncation, preventing darkening over time.
+  - **GPU Path:** Normalized colors to 0-1 range in `syncToGPU` for both CUDA and HIP, denormalized back to 0-255 in `syncFromGPU`, `raycastKernel`, `compactPointsKernel`, and `MarchingCubes` kernels. This ensures consistent color handling across the entire GPU pipeline.
+- **Impact:** GLB exports now have correct, vibrant colors on both CPU and GPU paths with proper brightness levels.
+
+## 8. Resolved: Super Resolution Quality Degradation
+**Status: FIXED**
+- **Problem:** Super resolution (AMD FSR 1.0 CAS) quality was worse than the native Kinect feed due to overly aggressive sharpening with a sharpness parameter of 0.85.
+- **Resolution:** Reduced the CAS sharpness parameter from 0.85 to 0.5 in all signal conditioner paths (CPU OpenMP, CUDA, and HIP). This provides a more conservative sharpening that enhances detail without introducing artifacts or degrading quality.
+- **Impact:** Super resolution now provides subtle enhancement without over-sharpening, maintaining the native feed quality while improving edge definition.
 
 ## 1. Resolved: UI Sliders Desync (Split-State Problem)
 **Status: FIXED**

@@ -2,6 +2,15 @@
 
 This document explains the various hyperparameters available in the KinectFusion reconstruction pipeline, their significance, and recommended configurations for different scanning scenarios.
 
+## 0. Signal Conditioning Parameters
+These parameters control the preprocessing of RGB and depth data before tracking and integration.
+
+| Parameter | UI Label | Range | Default | Significance |
+| :--- | :--- | :--- | :--- | :--- |
+| `cas_sharpness` | CAS Sharpness | 0.0 - 1.0 | 0.5 | Controls the strength of Contrast Adaptive Sharpening (AMD FSR 1.0). Lower values provide subtle enhancement, higher values increase edge definition but may introduce artifacts. |
+
+---
+
 ## 1. Global Depth Gating
 These parameters filter the raw depth data before it enters the tracking or integration stages.
 

@@ -3,6 +3,7 @@
 #include <Eigen/Geometry>
 #include <cstring>
 #include <cmath>
+#include <fstream>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -10,6 +11,47 @@
 
 namespace kfusion {
 namespace sensor {
+
+// FrameData logging infrastructure
+struct FrameDataStats {
+    int depth_filtered = 0;
+    int vertices_computed = 0;
+    int normals_computed = 0;
+    int normals_skipped_depth = 0;
+    int normals_skipped_jump = 0;
+    float max_depth = 0.0f;
+    float avg_depth = 0.0f;
+};
+
+FrameDataStats g_frame_stats;
+bool g_frame_logging_enabled = false;
+std::ofstream g_frame_log_file;
+
+void initFrameDataLogging() {
+    const char* log_env = std::getenv("AZU_FRAME_LOG");
+    if (log_env && std::string(log_env) == "1") {
+        g_frame_logging_enabled = true;
+        g_frame_log_file.open("framedata_log.csv");
+        if (g_frame_log_file.is_open()) {
+            g_frame_log_file << "frame,depth_filtered,vertices_computed,normals_computed,normals_skipped_depth,normals_skipped_jump,max_depth,avg_depth\n";
+        }
+    }
+}
+
+void logFrameDataStats(int frame_id) {
+    if (!g_frame_logging_enabled || !g_frame_log_file.is_open()) return;
+    g_frame_log_file << frame_id << ","
+               << g_frame_stats.depth_filtered << ","
+               << g_frame_stats.vertices_computed << ","
+               << g_frame_stats.normals_computed << ","
+               << g_frame_stats.normals_skipped_depth << ","
+               << g_frame_stats.normals_skipped_jump << ","
+               << g_frame_stats.max_depth << ","
+               << g_frame_stats.avg_depth << "\n";
+    g_frame_log_file.flush();
+    // Reset stats for next frame
+    g_frame_stats = FrameDataStats{};
+}
 
 namespace {
 
@@ -46,6 +88,14 @@ void buildFrameData(const uint16_t* raw_depth,
                     float           min_depth,
                     float           max_depth)
 {
+    static int frame_counter = 0;
+    static bool logging_initialized = false;
+    
+    if (!logging_initialized) {
+        initFrameDataLogging();
+        logging_initialized = true;
+    }
+    
     const int W = out.width;
     const int H = out.height;
     #pragma omp parallel for schedule(static)
@@ -57,10 +107,24 @@ void buildFrameData(const uint16_t* raw_depth,
                 out.depth_meters[idx] = 0.0f;
                 out.vertices[idx]     = Eigen::Vector3f::Zero();
                 out.normals[idx]      = Eigen::Vector3f::Zero();
+                if (g_frame_logging_enabled) {
+                    #pragma omp atomic
+                    g_frame_stats.depth_filtered++;
+                }
             } else {
                 out.depth_meters[idx] = d;
                 out.vertices[idx] = Eigen::Vector3f::Zero();
                 out.normals[idx]  = Eigen::Vector3f::Zero(); // computed separately
+                
+                if (g_frame_logging_enabled) {
+                    #pragma omp atomic
+                    g_frame_stats.vertices_computed++;
+                    #pragma omp critical
+                    {
+                        g_frame_stats.max_depth = std::max(g_frame_stats.max_depth, d);
+                        g_frame_stats.avg_depth += d;
+                    }
+                }
             }
             // Copy RGB
             out.rgb[idx * 3 + 0] = raw_rgb[idx * 3 + 0];
@@ -70,6 +134,14 @@ void buildFrameData(const uint16_t* raw_depth,
     }
 
     updateVerticesFromDepth(out);
+    
+    if (g_frame_logging_enabled && W * H > 0) {
+        g_frame_stats.avg_depth /= (W * H);
+    }
+    
+    if (g_frame_logging_enabled) {
+        logFrameDataStats(frame_counter++);
+    }
 }
 
 void computeNormals(FrameData& frame) {
@@ -91,6 +163,10 @@ void computeNormals(FrameData& frame) {
                 frame.depth_meters[u] <= 0.0f ||
                 frame.depth_meters[d] <= 0.0f) {
                 frame.normals[c] = Eigen::Vector3f::Zero();
+                if (g_frame_logging_enabled) {
+                    #pragma omp atomic
+                    g_frame_stats.normals_skipped_depth++;
+                }
                 continue;
             }
 
@@ -101,6 +177,10 @@ void computeNormals(FrameData& frame) {
                 std::abs(dc - frame.depth_meters[u]) > jump ||
                 std::abs(dc - frame.depth_meters[d]) > jump) {
                 frame.normals[c] = Eigen::Vector3f::Zero();
+                if (g_frame_logging_enabled) {
+                    #pragma omp atomic
+                    g_frame_stats.normals_skipped_jump++;
+                }
                 continue;
             }
 
@@ -108,10 +188,15 @@ void computeNormals(FrameData& frame) {
             Eigen::Vector3f dy = frame.vertices[d] - frame.vertices[u];
             Eigen::Vector3f n  = dx.cross(dy);
             float len = n.norm();
-            if (len > 1e-6f)
+            if (len > 1e-6f) {
                 frame.normals[c] = n / len;
-            else
+                if (g_frame_logging_enabled) {
+                    #pragma omp atomic
+                    g_frame_stats.normals_computed++;
+                }
+            } else {
                 frame.normals[c] = Eigen::Vector3f::Zero();
+            }
         }
     }
 }
