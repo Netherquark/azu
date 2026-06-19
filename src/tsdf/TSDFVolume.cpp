@@ -29,6 +29,10 @@ TSDFVolume::~TSDFVolume() {
 
 void TSDFVolume::reset() {
     std::unique_lock<std::shared_mutex> lk(mutex_);
+    unlocked_reset();
+}
+
+void TSDFVolume::unlocked_reset() {
     std::fill(voxels_.begin(), voxels_.end(), Voxel{0.0f, 0.0f, 128, 128, 128});
     integrated_frames_.store(0);
 }
@@ -40,7 +44,7 @@ void TSDFVolume::setParams(const TSDFParams& p) {
     if (resized) {
         size_t total = static_cast<size_t>(params_.resolution) * params_.resolution * params_.resolution;
         voxels_.resize(total);
-        reset();
+        unlocked_reset(); // already holding the lock — do NOT call reset() here
     }
 }
 

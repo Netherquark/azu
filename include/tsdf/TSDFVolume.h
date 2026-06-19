@@ -162,6 +162,9 @@ private:
                       float fx, float fy, float cx, float cy,
                       int width, int height);
 
+    // Non-locking reset used by setParams() which already holds the unique_lock.
+    void unlocked_reset();
+
 #ifdef CUDA_ENABLED
     // GPU state
     utils::CudaUniquePtr<VoxelGPU> d_voxels_; 

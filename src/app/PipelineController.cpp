@@ -759,15 +759,17 @@ void PipelineController::integrationLoop() {
         auto ui_frame = std::make_shared<sensor::FrameData>();
         ui_frame->width = sensor::DEPTH_WIDTH;
         ui_frame->height = sensor::DEPTH_HEIGHT;
-        ui_frame->vertices.reserve(n);
-        ui_frame->rgb.reserve(n * 3);
+        ui_frame->vertices.resize(n);
+        ui_frame->rgb.resize(n * 3);
+        ui_frame->depth_meters.resize(n);
         ui_frame->pose = Eigen::Matrix4f::Identity();
 
         for (size_t i = 0; i < n; ++i) {
-          ui_frame->vertices.emplace_back(h_v[i].x, h_v[i].y, h_v[i].z);
-          ui_frame->rgb.push_back(h_c[i].x);
-          ui_frame->rgb.push_back(h_c[i].y);
-          ui_frame->rgb.push_back(h_c[i].z);
+          ui_frame->vertices[i] = Eigen::Vector3f(h_v[i].x, h_v[i].y, h_v[i].z);
+          ui_frame->rgb[i*3+0] = h_c[i].x;
+          ui_frame->rgb[i*3+1] = h_c[i].y;
+          ui_frame->rgb[i*3+2] = h_c[i].z;
+          ui_frame->depth_meters[i] = (h_v[i].z != 0.0f || h_v[i].x != 0.0f || h_v[i].y != 0.0f) ? 1.0f : 0.0f;
         }
 
         QMetaObject::invokeMethod(
@@ -855,15 +857,18 @@ void PipelineController::integrationLoop() {
         int n_ui = ui_frame->width * ui_frame->height;
         ui_frame->vertices.resize(n_ui);
         ui_frame->rgb.resize(n_ui * 3);
+        ui_frame->depth_meters.resize(n_ui);
 
         for (int y = 0; y < ui_frame->height; ++y) {
           for (int x = 0; x < ui_frame->width; ++x) {
             int idx_full = (y * step) * sensor::DEPTH_WIDTH + (x * step);
             int idx_ui = y * ui_frame->width + x;
-            ui_frame->vertices[idx_ui] = model_back.vertices[idx_full];
+            auto& v = model_back.vertices[idx_full];
+            ui_frame->vertices[idx_ui] = v;
             ui_frame->rgb[idx_ui * 3 + 0] = model_back.colors[idx_full * 3 + 0];
             ui_frame->rgb[idx_ui * 3 + 1] = model_back.colors[idx_full * 3 + 1];
             ui_frame->rgb[idx_ui * 3 + 2] = model_back.colors[idx_full * 3 + 2];
+            ui_frame->depth_meters[idx_ui] = (v.z() != 0.0f || v.x() != 0.0f || v.y() != 0.0f) ? 1.0f : 0.0f;
           }
         }
         ui_frame->pose = Eigen::Matrix4f::Identity();

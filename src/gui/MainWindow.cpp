@@ -100,10 +100,7 @@ void MainWindow::connectSignals() {
     });
 
     pipeline_->setFrameReadyCallback([this](const sensor::FrameData& frame) {
-        auto frame_copy = std::make_shared<sensor::FrameData>(frame);
-        QMetaObject::invokeMethod(this, [this, frame_copy]() {
-            onFrameReady(*frame_copy);
-        }, Qt::QueuedConnection);
+        onFrameReady(frame);
     });
 
     pipeline_->setMeshReadyCallback([this]() {

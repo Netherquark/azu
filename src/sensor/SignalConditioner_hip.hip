@@ -3,7 +3,6 @@
 #include "sensor/SignalConditioner.h"
 #include "sensor/KinectSensor.h"
 #include <hip/hip_runtime.h>
-#include <hip/hip_runtime.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -13,7 +12,7 @@
     do { \
         hipError_t err = hipGetLastError(); \
         if (err != hipSuccess) { \
-            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, hipGetErrorString(err)); \
+            fprintf(stderr, "HIP error at %s %d: %s\n", __FILE__, __LINE__, hipGetErrorString(err)); \
         } \
     } while(0)
 #endif

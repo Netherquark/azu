@@ -174,7 +174,10 @@ __global__ void computeHessianKernel(
                     float3 v_model_world = model_vertices[midx];
                     float3 n_model_world = model_normals[midx];
 
-                    if (v_model_world.z > 0.0f && (n_model_world.x*n_model_world.x + n_model_world.y*n_model_world.y + n_model_world.z*n_model_world.z) > 0.9f) {
+                    // v_model_world is in WORLD space \u2014 z can be negative. Use norm check (zero = no hit).
+                    float mv_norm_sq = v_model_world.x*v_model_world.x + v_model_world.y*v_model_world.y + v_model_world.z*v_model_world.z;
+                    float mn_norm_sq = n_model_world.x*n_model_world.x + n_model_world.y*n_model_world.y + n_model_world.z*n_model_world.z;
+                    if (mv_norm_sq > 1e-12f && mn_norm_sq > 0.9f) {
                         float3 v_model;
                         v_model.x = rw00 * v_model_world.x + rw01 * v_model_world.y + rw02 * v_model_world.z + twx;
                         v_model.y = rw10 * v_model_world.x + rw11 * v_model_world.y + rw12 * v_model_world.z + twy;

@@ -4,7 +4,6 @@
 #include "tsdf/VoxelGPU.h"
 #include <hip/hip_runtime.h>
 #include <iostream>
-#include "tsdf/VoxelGPU.h"
 #include "utils/HipUniquePtr.h"
 
 #define HIP_CHECK(call) \
