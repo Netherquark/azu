@@ -129,21 +129,21 @@ bool GLBExporter::write(const meshing::MeshData& input_mesh, const std::string& 
         norm_length = buffer_data.size() - norm_offset;
     }
 
-    // --- vertex colors (as vec4 UNSIGNED_BYTE normalized) ---
-    // Optimized: 4 bytes per vertex instead of 16
+    // --- vertex colors (as vec4 FLOAT) ---
+    // Standard GLTF viewers prefer FLOAT colors.
     size_t col_offset = 0;
     size_t col_length = 0;
     if (has_colors) {
         col_offset = buffer_data.size();
-        std::vector<uint8_t> col_data;
+        std::vector<float> col_data;
         col_data.reserve(nvert * 4);
         for (size_t i = 0; i < nvert; ++i) {
-            col_data.push_back(mesh.colors[i*3+0]);
-            col_data.push_back(mesh.colors[i*3+1]);
-            col_data.push_back(mesh.colors[i*3+2]);
-            col_data.push_back(255); // alpha
+            col_data.push_back(mesh.colors[i*3+0] / 255.0f);
+            col_data.push_back(mesh.colors[i*3+1] / 255.0f);
+            col_data.push_back(mesh.colors[i*3+2] / 255.0f);
+            col_data.push_back(1.0f); // alpha
         }
-        appendBytes(col_data.data(), col_data.size());
+        appendBytes(col_data.data(), col_data.size() * sizeof(float));
         col_length = buffer_data.size() - col_offset;
     }
 
@@ -227,8 +227,8 @@ bool GLBExporter::write(const meshing::MeshData& input_mesh, const std::string& 
     int acc_col = -1;
     if (has_colors) {
         int bv_col = addBufferView(col_offset, col_length, TINYGLTF_TARGET_ARRAY_BUFFER);
-        acc_col = addAccessor(bv_col, TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE,
-                              TINYGLTF_TYPE_VEC4, nvert, true); // normalized=true
+        acc_col = addAccessor(bv_col, TINYGLTF_COMPONENT_TYPE_FLOAT,
+                              TINYGLTF_TYPE_VEC4, nvert);
     }
 
     int bv_idx_gltf = addBufferView(idx_offset, idx_length, TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER);

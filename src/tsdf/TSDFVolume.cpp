@@ -53,39 +53,59 @@ void TSDFVolume::integrate(const float*           depth_meters,
                            const Eigen::Matrix4f& pose,
                            float fx, float fy,
                            float cx, float cy,
-                           int   width, int height)
+                           int   width, int height,
+                           float min_depth,
+                           float max_depth)
 {
     std::unique_lock<std::shared_mutex> lk(mutex_);
 #ifdef CUDA_ENABLED
     if (gpu_enabled_) {
-        if (!d_depth_integ_) {
-            d_depth_integ_ = utils::make_cuda_unique<float>(width * height);
-            if (rgb) d_rgb_integ_ = utils::make_cuda_unique<uint8_t>(width * height * 3);
+        size_t depth_size = width * height;
+        size_t rgb_size = width * height * 3;
+        
+        // Reallocate buffers if size changed (memory leak fix)
+        if (!d_depth_integ_ || last_depth_size_ != depth_size) {
+            d_depth_integ_ = utils::make_cuda_unique<float>(depth_size);
+            last_depth_size_ = depth_size;
         }
+        if (rgb && (!d_rgb_integ_ || last_rgb_size_ != rgb_size)) {
+            d_rgb_integ_ = utils::make_cuda_unique<uint8_t>(rgb_size);
+            last_rgb_size_ = rgb_size;
+        }
+        
         cudaMemcpy(d_depth_integ_.get(), depth_meters, width * height * sizeof(float), cudaMemcpyHostToDevice);
         if (rgb) {
             cudaMemcpy(d_rgb_integ_.get(), rgb, width * height * 3, cudaMemcpyHostToDevice);
         }
-        integrateGPU(d_depth_integ_.get(), rgb ? d_rgb_integ_.get() : nullptr, pose, fx, fy, cx, cy, width, height);
+        integrateGPU(d_depth_integ_.get(), rgb ? d_rgb_integ_.get() : nullptr, pose, fx, fy, cx, cy, width, height, min_depth, max_depth);
     } else {
-        integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height);
+        integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height, min_depth, max_depth);
     }
 #elif defined(HIP_ENABLED)
     if (gpu_enabled_) {
-        if (!d_depth_integ_) {
-            d_depth_integ_ = utils::make_hip_unique<float>(width * height);
-            if (rgb) d_rgb_integ_ = utils::make_hip_unique<uint8_t>(width * height * 3);
+        size_t depth_size = width * height;
+        size_t rgb_size = width * height * 3;
+        
+        // Reallocate buffers if size changed (memory leak fix)
+        if (!d_depth_integ_ || last_depth_size_ != depth_size) {
+            d_depth_integ_ = utils::make_hip_unique<float>(depth_size);
+            last_depth_size_ = depth_size;
         }
+        if (rgb && (!d_rgb_integ_ || last_rgb_size_ != rgb_size)) {
+            d_rgb_integ_ = utils::make_hip_unique<uint8_t>(rgb_size);
+            last_rgb_size_ = rgb_size;
+        }
+        
         (void)hipMemcpy(d_depth_integ_.get(), depth_meters, width * height * sizeof(float), hipMemcpyHostToDevice);
         if (rgb) {
             (void)hipMemcpy(d_rgb_integ_.get(), rgb, width * height * 3, hipMemcpyHostToDevice);
         }
-        integrateGPU(d_depth_integ_.get(), rgb ? d_rgb_integ_.get() : nullptr, pose, fx, fy, cx, cy, width, height);
+        integrateGPU(d_depth_integ_.get(), rgb ? d_rgb_integ_.get() : nullptr, pose, fx, fy, cx, cy, width, height, min_depth, max_depth);
     } else {
-        integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height);
+        integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height, min_depth, max_depth);
     }
 #else
-    integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height);
+    integrateCPU(depth_meters, rgb, pose, fx, fy, cx, cy, width, height, min_depth, max_depth);
 #endif
     integrated_frames_.fetch_add(1);
 }
@@ -95,7 +115,9 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
                                const Eigen::Matrix4f& pose,
                                float fx, float fy,
                                float cx, float cy,
-                               int   width, int height)
+                               int   width, int height,
+                               float min_depth,
+                               float max_depth)
 {
     const float trunc = params_.truncation;
     const float max_w = params_.max_weight;
@@ -114,7 +136,10 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             float d_meas = depth_meters[y * width + x];
-            if (d_meas <= 0.1f) continue;
+            // Filter invalid depths: too close, too far, or NaN/inf
+            // Use 0.1f as minimum threshold (original behavior) to avoid regression
+            if (d_meas < 0.1f || d_meas > max_depth || 
+                std::isnan(d_meas) || std::isinf(d_meas)) continue;
 
             // Ray direction in camera space
             Eigen::Vector3f ray_cam((x - cx) / fx, (y - cy) / fy, 1.0f);
@@ -166,9 +191,10 @@ void TSDFVolume::integrateCPU(const float*           depth_meters,
 
                 if (rgb && sdf > -trunc * 0.5f) {
                     int pidx = (y * width + x) * 3;
-                    vox.r = static_cast<uint8_t>((vox.r * w_old + rgb[pidx+0]) / (w_old + 1.0f + 1e-6f));
-                    vox.g = static_cast<uint8_t>((vox.g * w_old + rgb[pidx+1]) / (w_old + 1.0f + 1e-6f));
-                    vox.b = static_cast<uint8_t>((vox.b * w_old + rgb[pidx+2]) / (w_old + 1.0f + 1e-6f));
+                    // Use float arithmetic to avoid truncation darkening
+                    vox.r = static_cast<uint8_t>(std::round((static_cast<float>(vox.r) * w_old + static_cast<float>(rgb[pidx+0])) / (w_old + 1.0f + 1e-6f)));
+                    vox.g = static_cast<uint8_t>(std::round((static_cast<float>(vox.g) * w_old + static_cast<float>(rgb[pidx+1])) / (w_old + 1.0f + 1e-6f)));
+                    vox.b = static_cast<uint8_t>(std::round((static_cast<float>(vox.b) * w_old + static_cast<float>(rgb[pidx+2])) / (w_old + 1.0f + 1e-6f)));
                 }
             }
         }

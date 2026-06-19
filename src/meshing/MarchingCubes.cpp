@@ -524,8 +524,33 @@ std::shared_ptr<MeshData> MarchingCubes::extract(const tsdf::TSDFVolume& volume,
     }
 
     // Merge results with unified vertex mapping
+    // Use spatial quantization to ensure vertices at slice boundaries are unified
     std::shared_ptr<MeshData> total_mesh = std::make_shared<MeshData>();
-    std::unordered_map<Eigen::Vector3f, uint32_t, VectorHash> global_map;
+    
+    // Quantize positions to voxel grid for reliable unification
+    struct QuantizedPos {
+        int ix, iy, iz;
+        
+        QuantizedPos(const Eigen::Vector3f& pos, float voxel_size) {
+            ix = static_cast<int>(std::round(pos.x() / voxel_size));
+            iy = static_cast<int>(std::round(pos.y() / voxel_size));
+            iz = static_cast<int>(std::round(pos.z() / voxel_size));
+        }
+        
+        bool operator==(const QuantizedPos& other) const {
+            return ix == other.ix && iy == other.iy && iz == other.iz;
+        }
+    };
+    
+    struct QuantizedHash {
+        size_t operator()(const QuantizedPos& q) const {
+            return std::hash<int>{}(q.ix) ^ 
+                   (std::hash<int>{}(q.iy) << 1) ^ 
+                   (std::hash<int>{}(q.iz) << 2);
+        }
+    };
+    
+    std::unordered_map<QuantizedPos, uint32_t, QuantizedHash> global_map;
 
     for (const auto& sm : slice_meshes) {
         if (sm.empty()) continue;
@@ -534,12 +559,13 @@ std::shared_ptr<MeshData> MarchingCubes::extract(const tsdf::TSDFVolume& volume,
             uint32_t old_idx = sm.indices[i];
             const auto& pos = sm.positions[old_idx];
             
-            auto it = global_map.find(pos);
+            QuantizedPos qpos(pos, p.voxel_size * 0.01f); // Fine quantization for accuracy
+            auto it = global_map.find(qpos);
             if (it != global_map.end()) {
                 total_mesh->indices.push_back(it->second);
             } else {
                 uint32_t new_idx = static_cast<uint32_t>(total_mesh->positions.size());
-                global_map[pos] = new_idx;
+                global_map[qpos] = new_idx;
                 total_mesh->positions.push_back(pos);
                 total_mesh->normals.push_back(sm.normals[old_idx]);
                 if (sm.colors.size() == sm.positions.size() * 3) {

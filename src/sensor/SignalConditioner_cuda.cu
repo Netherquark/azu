@@ -24,7 +24,7 @@ namespace sensor {
 // Constants matching SignalConditioner_omp.cpp
 namespace {
     constexpr int kHoleFillRadius = 2;
-    constexpr int kGuidedRadius = 9;
+    constexpr int kGuidedRadius = 4; // Reduced from 9: 9x9 kernel ~17M MACs vs 19x19 ~110M
     constexpr int kRgbBilateralRadius = 2;
     constexpr int kDepthMedianRadius = 1;
     constexpr float kEmaJumpResetMeters = 0.05f;
@@ -53,49 +53,51 @@ namespace {
 // Kernels
 // ---------------------------------------------------------------------------
 
-__device__ inline float computeLumaGPU(float r, float g, float b) {
-    return 0.299f * r + 0.587f * g + 0.114f * b;
-}
+// ---------------------------------------------------------------------------
+// FSR 1.0 RCAS — CUDA inline kernel (same algorithm as SuperResolution_cuda.cu)
+// ---------------------------------------------------------------------------
 
-__device__ inline void getPixelGPU(const uint8_t* img, int x, int y, int w, int h, float out[3], float& out_luma) {
+__device__ static inline void rcasGetPixelCUDA(const uint8_t* img,
+                                                int x, int y, int w, int h,
+                                                float out[3]) {
     x = max(0, min(x, w - 1));
     y = max(0, min(y, h - 1));
-    int idx = (y * w + x) * 3;
-    out[0] = img[idx + 0] / 255.0f;
-    out[1] = img[idx + 1] / 255.0f;
-    out[2] = img[idx + 2] / 255.0f;
-    out_luma = computeLumaGPU(out[0], out[1], out[2]);
+    const int idx = (y * w + x) * 3;
+    out[0] = (float)img[idx + 0] * (1.0f / 255.0f);
+    out[1] = (float)img[idx + 1] * (1.0f / 255.0f);
+    out[2] = (float)img[idx + 2] * (1.0f / 255.0f);
 }
 
-__global__ void applyCASKernel(const uint8_t* d_in, uint8_t* d_out, int width, int height, float peak) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
+__global__ void applyCASKernel(const uint8_t* __restrict__ d_in,
+                               uint8_t* __restrict__ d_out,
+                               int width, int height, float peak) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
 
     float a[3], b[3], c[3], d[3], e[3];
-    float l_a, l_b, l_c, l_d, l_e;
-    
-    getPixelGPU(d_in, x, y - 1, width, height, a, l_a);
-    getPixelGPU(d_in, x - 1, y, width, height, b, l_b);
-    getPixelGPU(d_in, x, y, width, height, c, l_c);
-    getPixelGPU(d_in, x + 1, y, width, height, d, l_d);
-    getPixelGPU(d_in, x, y + 1, width, height, e, l_e);
+    rcasGetPixelCUDA(d_in, x,     y - 1, width, height, a);
+    rcasGetPixelCUDA(d_in, x - 1, y,     width, height, b);
+    rcasGetPixelCUDA(d_in, x,     y,     width, height, c);
+    rcasGetPixelCUDA(d_in, x + 1, y,     width, height, d);
+    rcasGetPixelCUDA(d_in, x,     y + 1, width, height, e);
 
-    float min_luma = min(l_a, min(l_b, min(l_c, min(l_d, l_e))));
-    float max_luma = max(l_a, max(l_b, max(l_c, max(l_d, l_e))));
-    
-    float d_min = min_luma;
-    float d_max = 1.0f - max_luma;
-    float max_val_safe = max_luma + 1e-6f;
-    
-    float w = sqrt(min(d_min, d_max) / max_val_safe) * peak;
-    float weight_sum = 1.0f + 4.0f * w;
-    
-    int out_idx = (y * width + x) * 3;
+    float amp = 1.0f;
     for (int ch = 0; ch < 3; ++ch) {
-        float enhanced = (c[ch] + w * (a[ch] + b[ch] + d[ch] + e[ch])) / weight_sum;
-        d_out[out_idx + ch] = (uint8_t)(max(0.0f, min(1.0f, enhanced)) * 255.0f);
+        float mn     = fminf(a[ch], fminf(b[ch], fminf(c[ch], fminf(d[ch], e[ch]))));
+        float mx     = fmaxf(a[ch], fmaxf(b[ch], fmaxf(c[ch], fmaxf(d[ch], e[ch]))));
+        float mx_s   = fmaxf(mx, 1e-6f);
+        float amp_ch = fminf(mn, 1.0f - mx) / mx_s;
+        amp = fminf(amp, amp_ch);
+    }
+
+    const float w          = amp * peak;
+    const float weight_sum = 1.0f + 4.0f * w;
+    const int   out_idx    = (y * width + x) * 3;
+
+    for (int ch = 0; ch < 3; ++ch) {
+        float val = (c[ch] + w * (a[ch] + b[ch] + d[ch] + e[ch])) / weight_sum;
+        d_out[out_idx + ch] = (uint8_t)(fmaxf(0.0f, fminf(1.0f, val)) * 255.0f);
     }
 }
 
@@ -374,7 +376,8 @@ bool SignalConditioner::processCuda(RawFrame& raw,
     CUDA_CHECK_LAST();
 
     // 2. Super Resolution Guidance (CAS)
-    float sharpness = 0.85f;
+    // Reduced sharpness from 0.85 to 0.5 to avoid over-sharpening artifacts and quality degradation
+    float sharpness = 0.5f;
     float t = std::max(0.0f, std::min(sharpness, 1.0f));
     float peak = -1.0f / ((1.0f - t) * 8.0f + t * 5.0f);
     applyCASKernel<<<grid, block, 0, stream>>>(d_rgb_in_.get(), d_rgb_out_.get(), w, h, peak);

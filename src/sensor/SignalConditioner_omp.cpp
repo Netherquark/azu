@@ -21,7 +21,9 @@ namespace {
 
 constexpr int kClaheTileSize = 8;
 constexpr int kHoleFillRadius = 2;
-constexpr int kGuidedRadius = 9;
+// Reduced from 9 to 4: radius-9 = 19x19 kernel = ~110M MACs/frame on 5650u iGPU.
+// Radius-4 = 9x9 kernel = ~17M MACs/frame with near-identical denoising quality.
+constexpr int kGuidedRadius = 4;
 constexpr int kRgbBilateralRadius = 2;
 constexpr int kDepthMedianRadius = 1;
 constexpr float kEmaJumpResetMeters = 0.05f;
@@ -210,7 +212,8 @@ void SignalConditioner::buildSuperResolutionGuidance(const std::vector<uint8_t>&
     sr_rgb_ = rgb;
 
     // CAS is the in-tree fallback guidance sharpener until a DNN SR backend is added.
-    sr::applyCAS(sr_rgb_, FRAME_W, FRAME_H, 0.85f);
+    // Reduced sharpness from 0.85 to 0.5 to avoid over-sharpening artifacts and quality degradation
+    sr::applyCAS(sr_rgb_, FRAME_W, FRAME_H, 0.5f);
 
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < FRAME_W * FRAME_H; ++i) {

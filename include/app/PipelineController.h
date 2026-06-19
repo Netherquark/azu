@@ -92,6 +92,10 @@ private:
     std::unique_ptr<tracking::ICPTracker>    tracker_;
     std::unique_ptr<tsdf::TSDFVolume>        tsdf_;
     std::shared_mutex                        tsdf_mutex_;
+    // Serializes ALL GPU kernel dispatches across tracking/integration/meshing threads.
+    // On the AMD 5650u iGPU the ROCm ring buffer cannot handle concurrent kernel submissions
+    // from multiple host threads on the default stream — this causes TDR (GPU Hang).
+    mutable std::mutex                       gpu_mutex_;
     std::unique_ptr<meshing::MarchingCubes>  cubes_;
     meshing::SharedMesh                      shared_mesh_;
 

@@ -33,7 +33,8 @@ __global__ void integrationKernel_VoxelParallel(
     const float* depth, const uint8_t* rgb, int width, int height,
     float fx, float fy, float cx, float cy,
     float rwc00, float rwc01, float rwc02, float rwc10, float rwc11, float rwc12, float rwc20, float rwc21, float rwc22,
-    float twc_x, float twc_y, float twc_z)
+    float twc_x, float twc_y, float twc_z,
+    float min_depth, float max_depth)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -63,7 +64,8 @@ __global__ void integrationKernel_VoxelParallel(
     if (u < 0 || u >= width || v < 0 || v >= height) return;
 
     float d_meas = depth[v * width + u];
-    if (d_meas <= 0.1f) return;
+    // Filter invalid depths: too close, too far, or NaN/inf
+    if (d_meas < 0.1f || d_meas > max_depth || isnan(d_meas) || isinf(d_meas)) return;
 
     float sdf = d_meas - cz_c;
     if (sdf < -truncation) return;
@@ -84,6 +86,7 @@ __global__ void integrationKernel_VoxelParallel(
 
     if (rgb && sdf > -truncation * 0.5f) {
         int pidx = (v * width + u) * 3;
+        // Store colors directly in 0-255 range (no normalization)
         float r_meas = (float)rgb[pidx + 0];
         float g_meas = (float)rgb[pidx + 1];
         float b_meas = (float)rgb[pidx + 2];
@@ -123,9 +126,10 @@ void TSDFVolume::syncToGPU() {
             size_t idx = offset + i;
             gpu_data[i].tsdf   = voxels_[idx].tsdf;
             gpu_data[i].weight = voxels_[idx].weight;
-            gpu_data[i].r      = voxels_[idx].r;
-            gpu_data[i].g      = voxels_[idx].g;
-            gpu_data[i].b      = voxels_[idx].b;
+            // Store colors directly in 0-255 range (no normalization)
+            gpu_data[i].r      = static_cast<float>(voxels_[idx].r);
+            gpu_data[i].g      = static_cast<float>(voxels_[idx].g);
+            gpu_data[i].b      = static_cast<float>(voxels_[idx].b);
         }
         HIP_CHECK(hipMemcpy(d_voxels_.get() + offset, gpu_data.data(), current_chunk * sizeof(VoxelGPU), hipMemcpyHostToDevice));
     }
@@ -145,6 +149,7 @@ void TSDFVolume::syncFromGPU() {
             voxels_[idx].weight = w;
             if (w > 0.001f) {
                 voxels_[idx].tsdf = gpu_data[i].tsdf;
+                // Store colors directly in 0-255 range (no denormalization)
                 voxels_[idx].r = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].r));
                 voxels_[idx].g = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].g));
                 voxels_[idx].b = (uint8_t)fminf(255.0f, fmaxf(0.0f, gpu_data[i].b));
@@ -160,7 +165,9 @@ void TSDFVolume::integrateGPU(const float*           d_depth,
                                const Eigen::Matrix4f& pose,
                                float fx, float fy,
                                float cx, float cy,
-                               int   width, int height)
+                               int   width, int height,
+                               float min_depth,
+                               float max_depth)
 {
     if (!gpu_valid_) return;
 
@@ -181,7 +188,8 @@ void TSDFVolume::integrateGPU(const float*           d_depth,
         (VoxelGPU*)d_voxels_.get(), params_.resolution, params_.voxel_size, origin, params_.truncation, params_.max_weight,
         d_depth, d_rgb, width, height, fx, fy, cx, cy,
         R_wc(0,0), R_wc(0,1), R_wc(0,2), R_wc(1,0), R_wc(1,1), R_wc(1,2), R_wc(2,0), R_wc(2,1), R_wc(2,2),
-        t_wc.x(), t_wc.y(), t_wc.z()
+        t_wc.x(), t_wc.y(), t_wc.z(),
+        min_depth, max_depth
     );
     HIP_CHECK_LAST();
     HIP_CHECK(hipDeviceSynchronize());
@@ -314,7 +322,12 @@ __global__ void raycastKernel(
                     int vz = __float2int_rd((pf.z - origin.z) / voxel_size);
                     if (vx >= 0 && vx < resolution && vy >= 0 && vy < resolution && vz >= 0 && vz < resolution) {
                         VoxelGPU& v = voxels[vz * resolution * resolution + vy * resolution + vx];
-                        out_c[py * width + px] = make_uchar3((uint8_t)v.r, (uint8_t)v.g, (uint8_t)v.b);
+                        // Store colors directly in 0-255 range (no denormalization)
+                        out_c[py * width + px] = make_uchar3(
+                            (uint8_t)fminf(255.0f, fmaxf(0.0f, v.r)),
+                            (uint8_t)fminf(255.0f, fmaxf(0.0f, v.g)),
+                            (uint8_t)fminf(255.0f, fmaxf(0.0f, v.b))
+                        );
                     }
                 }
                 return;
@@ -413,6 +426,7 @@ __global__ void compactPointsKernel(
             origin.z + z * voxel_size
         );
         const VoxelGPU& v = voxels[idx];
+        // Store colors directly in 0-255 range (no denormalization)
         out_colors[out_idx] = make_uchar3(
             (uint8_t)fmaxf(0, fminf(255, v.r)),
             (uint8_t)fmaxf(0, fminf(255, v.g)),

@@ -55,7 +55,9 @@ public:
                    const Eigen::Matrix4f&  pose,
                    float                   fx, float fy,
                    float                   cx, float cy,
-                   int                     width, int height);
+                   int                     width, int height,
+                   float                   min_depth = 0.3f,
+                   float                   max_depth = 5.0f);
 
     // Raycast the TSDF volume to produce a model frame
     void raycast(const Eigen::Matrix4f&  pose,
@@ -100,7 +102,9 @@ public:
                       const Eigen::Matrix4f& pose,
                       float fx, float fy, 
                       float cx, float cy,
-                      int width, int height);
+                      int width, int height,
+                      float min_depth = 0.3f,
+                      float max_depth = 5.0f);
     void raycastGPU(const Eigen::Matrix4f& pose,
                     float fx, float fy, float cx, float cy,
                     int width, int height,
@@ -121,7 +125,9 @@ public:
                       const Eigen::Matrix4f& pose,
                       float fx, float fy, 
                       float cx, float cy,
-                      int width, int height);
+                      int width, int height,
+                      float min_depth = 0.3f,
+                      float max_depth = 5.0f);
     void raycastGPU(const Eigen::Matrix4f& pose,
                     float fx, float fy, float cx, float cy,
                     int width, int height,
@@ -160,7 +166,8 @@ private:
                       const uint8_t* rgb,
                       const Eigen::Matrix4f& pose,
                       float fx, float fy, float cx, float cy,
-                      int width, int height);
+                      int width, int height,
+                      float min_depth, float max_depth);
 
     // Non-locking reset used by setParams() which already holds the unique_lock.
     void unlocked_reset();
@@ -178,6 +185,8 @@ private:
     // Cached buffers for safe thread-decoupled integration
     mutable utils::CudaUniquePtr<float> d_depth_integ_;
     mutable utils::CudaUniquePtr<uint8_t> d_rgb_integ_;
+    mutable size_t last_depth_size_ = 0;
+    mutable size_t last_rgb_size_ = 0;
     
     bool    gpu_valid_ = false;
 #elif defined(HIP_ENABLED)
@@ -193,6 +202,8 @@ private:
     // Cached buffers for safe thread-decoupled integration
     mutable utils::HipUniquePtr<float> d_depth_integ_;
     mutable utils::HipUniquePtr<uint8_t> d_rgb_integ_;
+    mutable size_t last_depth_size_ = 0;
+    mutable size_t last_rgb_size_ = 0;
     
     bool    gpu_valid_ = false;
 #endif

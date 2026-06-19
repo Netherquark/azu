@@ -1,5 +1,8 @@
 # rocm.md
 
+**⚠️ CUDA/NVIDIA Path Status: DEPRECATED**
+The CUDA (NVIDIA) code path is currently **untested and may not compile**. Due to lack of access to NVIDIA hardware for testing, the CUDA backend cannot be verified. The CUDA code remains in the codebase but is not actively maintained. Use the HIP (AMD) or CPU backend instead.
+
 ## Goal
 
 Write correct, maintainable HIP/ROCm code.

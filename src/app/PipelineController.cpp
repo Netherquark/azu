@@ -503,6 +503,7 @@ void PipelineController::trackingLoop() {
       for (const auto& h_pose : hypotheses) {
           tracking::ICPResult res;
           if (use_gpu_.load()) {
+            std::lock_guard<std::mutex> gpu_lk(gpu_mutex_);
 #ifdef CUDA_ENABLED
             res = tracker_->trackGPU(
                 preprocessor_->getGPUDepthMeters(),
@@ -536,6 +537,7 @@ void PipelineController::trackingLoop() {
       tracker_->setParams(original_params);
     } else {
       if (use_gpu_.load()) {
+        std::lock_guard<std::mutex> gpu_lk(gpu_mutex_);
 #ifdef CUDA_ENABLED
         icp_result = tracker_->trackGPU(
             preprocessor_->getGPUDepthMeters(),
@@ -670,6 +672,13 @@ void PipelineController::integrationLoop() {
   static constexpr int MESH_TRIGGER_FRAMES =
       5; // trigger mesh update every N integrated frames
   int frames_since_mesh = 0;
+  
+  float d_min = 0.3f, d_max = 5.0f;
+  {
+      std::lock_guard<std::mutex> lk(hyper_mutex_);
+      d_min = hyperparams_.min_depth;
+      d_max = hyperparams_.max_depth;
+  }
 
   while (running_.load()) {
     std::shared_ptr<sensor::FrameData> frame;
@@ -687,6 +696,9 @@ void PipelineController::integrationLoop() {
 
     {
       utils::ScopedTimer t("TSDF Integration");
+      // gpu_mutex_ MUST be acquired before tsdf_mutex_ (consistent lock order).
+      // Always acquire gpu_mutex_ first to prevent deadlock with the meshing thread.
+      std::unique_lock<std::mutex> gpu_lk(gpu_mutex_);
       std::unique_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
 #ifdef CUDA_ENABLED
       if (use_gpu_.load()) {
@@ -696,13 +708,14 @@ void PipelineController::integrationLoop() {
               frame->pose,
               static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
               static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
-              frame->width, frame->height);
+              frame->width, frame->height, d_min, d_max);
       } else {
+          gpu_lk.unlock(); // CPU path doesn't need GPU serialization
           tsdf_->integrate(
               frame->depth_meters.data(), frame->rgb.data(), frame->pose,
               static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
               static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
-              frame->width, frame->height);
+              frame->width, frame->height, d_min, d_max);
       }
 #elif defined(HIP_ENABLED)
       if (use_gpu_.load()) {
@@ -712,20 +725,22 @@ void PipelineController::integrationLoop() {
               frame->pose,
               static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
               static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
-              frame->width, frame->height);
+              frame->width, frame->height, d_min, d_max);
       } else {
+          gpu_lk.unlock(); // CPU path doesn't need GPU serialization
           tsdf_->integrate(
               frame->depth_meters.data(), frame->rgb.data(), frame->pose,
               static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
               static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
-              frame->width, frame->height);
+              frame->width, frame->height, d_min, d_max);
       }
 #else
+      gpu_lk.unlock(); // CPU-only build: no GPU serialization needed
       tsdf_->integrate(
           frame->depth_meters.data(), frame->rgb.data(), frame->pose,
           static_cast<float>(sensor::FX), static_cast<float>(sensor::FY),
           static_cast<float>(sensor::CX), static_cast<float>(sensor::CY),
-          frame->width, frame->height);
+          frame->width, frame->height, d_min, d_max);
 #endif
     }
 
@@ -736,103 +751,118 @@ void PipelineController::integrationLoop() {
       auto &model_back = *(model_buffers_.buffers[back]);
 
 #ifdef CUDA_ENABLED
-      {
-          std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
-          tsdf_->raycastGPU(frame->pose, static_cast<float>(sensor::FX),
-                            static_cast<float>(sensor::FY),
-                            static_cast<float>(sensor::CX),
-                            static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
-                            sensor::DEPTH_HEIGHT, model_back.d_vertices.get(),
-                            model_back.d_normals.get(), model_back.d_colors.get());
-      }
-      // Sync to CPU for UI preview
-      if (frame_ready_cb_) {
-        size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
-        std::vector<float3> h_v(n);
-        std::vector<float3> h_n(n);
-        std::vector<uchar3> h_c(n);
+      if (use_gpu_.load()) {
+          {
+              // Raycast must be serialized: it launches a GPU kernel over the same
+              // TSDF volume that integration just wrote. Use gpu_mutex_ not shared_lock.
+              std::lock_guard<std::mutex> gpu_lk(gpu_mutex_);
+              std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
+              tsdf_->raycastGPU(frame->pose, static_cast<float>(sensor::FX),
+                                static_cast<float>(sensor::FY),
+                                static_cast<float>(sensor::CX),
+                                static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
+                                sensor::DEPTH_HEIGHT, model_back.d_vertices.get(),
+                                model_back.d_normals.get(), model_back.d_colors.get());
+          }
+          // Sync to CPU for UI preview
+          if (frame_ready_cb_) {
+            size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
+            std::vector<float3> h_v(n);
+            std::vector<float3> h_n(n);
+            std::vector<uchar3> h_c(n);
 
-        cudaMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_n.data(), model_back.d_normals.get(), n * sizeof(float3), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_n.data(), model_back.d_normals.get(), n * sizeof(float3), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), cudaMemcpyDeviceToHost);
 
-        auto ui_frame = std::make_shared<sensor::FrameData>();
-        ui_frame->width = sensor::DEPTH_WIDTH;
-        ui_frame->height = sensor::DEPTH_HEIGHT;
-        ui_frame->vertices.resize(n);
-        ui_frame->rgb.resize(n * 3);
-        ui_frame->depth_meters.resize(n);
-        ui_frame->pose = Eigen::Matrix4f::Identity();
+            auto ui_frame = std::make_shared<sensor::FrameData>();
+            ui_frame->width = sensor::DEPTH_WIDTH;
+            ui_frame->height = sensor::DEPTH_HEIGHT;
+            ui_frame->vertices.resize(n);
+            ui_frame->rgb.resize(n * 3);
+            ui_frame->depth_meters.resize(n);
+            ui_frame->pose = Eigen::Matrix4f::Identity();
 
-        for (size_t i = 0; i < n; ++i) {
-          ui_frame->vertices[i] = Eigen::Vector3f(h_v[i].x, h_v[i].y, h_v[i].z);
-          ui_frame->rgb[i*3+0] = h_c[i].x;
-          ui_frame->rgb[i*3+1] = h_c[i].y;
-          ui_frame->rgb[i*3+2] = h_c[i].z;
-          ui_frame->depth_meters[i] = (h_v[i].z != 0.0f || h_v[i].x != 0.0f || h_v[i].y != 0.0f) ? 1.0f : 0.0f;
-        }
+            for (size_t i = 0; i < n; ++i) {
+              ui_frame->vertices[i] = Eigen::Vector3f(h_v[i].x, h_v[i].y, h_v[i].z);
+              ui_frame->rgb[i*3+0] = h_c[i].x;
+              ui_frame->rgb[i*3+1] = h_c[i].y;
+              ui_frame->rgb[i*3+2] = h_c[i].z;
+              ui_frame->depth_meters[i] = (h_v[i].z != 0.0f || h_v[i].x != 0.0f || h_v[i].y != 0.0f) ? 1.0f : 0.0f;
+            }
 
-        QMetaObject::invokeMethod(
-            qApp,
-            [this, ui_frame]() {
-              if (frame_ready_cb_)
-                frame_ready_cb_(*ui_frame);
-            },
-            Qt::QueuedConnection);
+            QMetaObject::invokeMethod(
+                qApp,
+                [this, ui_frame]() {
+                  if (frame_ready_cb_)
+                    frame_ready_cb_(*ui_frame);
+                },
+                Qt::QueuedConnection);
+          }
+      } else {
+          goto cpu_raycast;
       }
 #elif defined(HIP_ENABLED)
-      {
-          std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
-          tsdf_->raycastGPU(frame->pose, static_cast<float>(sensor::FX),
-                            static_cast<float>(sensor::FY),
-                            static_cast<float>(sensor::CX),
-                            static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
-                            sensor::DEPTH_HEIGHT, model_back.d_vertices.get(),
-                            model_back.d_normals.get(), model_back.d_colors.get());
-      }
-      // Sync to CPU for UI preview.
-      // Throttle: on the shared AMD iGPU (5650u) every hipMemcpy stalls the GPU
-      // pipeline and starves the GNOME compositor. Only send a UI update every
-      // HIP_UI_PREVIEW_INTERVAL integrated frames to keep the display responsive.
-      static constexpr int HIP_UI_PREVIEW_INTERVAL = 3;
-      if (frame_ready_cb_ && (++hip_ui_skip_ % HIP_UI_PREVIEW_INTERVAL == 0)) {
-        size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
-        std::vector<float3> h_v(n);
-        std::vector<uchar3> h_c(n);
+      if (use_gpu_.load()) {
+          {
+              // Raycast serialized via gpu_mutex_ — prevents the meshing thread from
+              // simultaneously running a heavy marching cubes kernel on the 5650u.
+              std::lock_guard<std::mutex> gpu_lk(gpu_mutex_);
+              std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
+              tsdf_->raycastGPU(frame->pose, static_cast<float>(sensor::FX),
+                                static_cast<float>(sensor::FY),
+                                static_cast<float>(sensor::CX),
+                                static_cast<float>(sensor::CY), sensor::DEPTH_WIDTH,
+                                sensor::DEPTH_HEIGHT, model_back.d_vertices.get(),
+                                model_back.d_normals.get(), model_back.d_colors.get());
+          }
+          // Sync to CPU for UI preview.
+          // Throttle: on the shared AMD iGPU (5650u) every hipMemcpy stalls the GPU
+          // pipeline and starves the GNOME compositor. Only send a UI update every
+          // HIP_UI_PREVIEW_INTERVAL integrated frames to keep the display responsive.
+          static constexpr int HIP_UI_PREVIEW_INTERVAL = 3;
+          if (frame_ready_cb_ && (++hip_ui_skip_ % HIP_UI_PREVIEW_INTERVAL == 0)) {
+            size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
+            std::vector<float3> h_v(n);
+            std::vector<uchar3> h_c(n);
 
-        // raycastGPU already called hipDeviceSynchronize internally.
-        // Only copy what the UI actually needs (vertices + colors, skip normals).
-        (void)hipMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), hipMemcpyDeviceToHost);
-        (void)hipMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), hipMemcpyDeviceToHost);
+            // raycastGPU already called hipDeviceSynchronize internally.
+            // Only copy what the UI actually needs (vertices + colors, skip normals).
+            (void)hipMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), hipMemcpyDeviceToHost);
+            (void)hipMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), hipMemcpyDeviceToHost);
 
-        auto ui_frame = std::make_shared<sensor::FrameData>();
-        ui_frame->width  = sensor::DEPTH_WIDTH;
-        ui_frame->height = sensor::DEPTH_HEIGHT;
-        // Use resize (not reserve) so rgb is properly sized for index access in uploadPointCloud.
-        ui_frame->vertices.resize(n);
-        ui_frame->rgb.resize(n * 3);
-        // Populate depth_meters so uploadPointCloud uses the depth-based validity path.
-        ui_frame->depth_meters.resize(n);
-        ui_frame->pose = Eigen::Matrix4f::Identity();
+            auto ui_frame = std::make_shared<sensor::FrameData>();
+            ui_frame->width  = sensor::DEPTH_WIDTH;
+            ui_frame->height = sensor::DEPTH_HEIGHT;
+            // Use resize (not reserve) so rgb is properly sized for index access in uploadPointCloud.
+            ui_frame->vertices.resize(n);
+            ui_frame->rgb.resize(n * 3);
+            // Populate depth_meters so uploadPointCloud uses the depth-based validity path.
+            ui_frame->depth_meters.resize(n);
+            ui_frame->pose = Eigen::Matrix4f::Identity();
 
-        for (size_t i = 0; i < n; ++i) {
-          ui_frame->vertices[i] = Eigen::Vector3f(h_v[i].x, h_v[i].y, h_v[i].z);
-          ui_frame->rgb[i*3+0]  = h_c[i].x;
-          ui_frame->rgb[i*3+1]  = h_c[i].y;
-          ui_frame->rgb[i*3+2]  = h_c[i].z;
-          // A non-zero sentinel depth marks valid raycasted hits; zero means miss.
-          ui_frame->depth_meters[i] = (h_v[i].z != 0.0f || h_v[i].x != 0.0f || h_v[i].y != 0.0f) ? 1.0f : 0.0f;
-        }
+            for (size_t i = 0; i < n; ++i) {
+              ui_frame->vertices[i] = Eigen::Vector3f(h_v[i].x, h_v[i].y, h_v[i].z);
+              ui_frame->rgb[i*3+0]  = h_c[i].x;
+              ui_frame->rgb[i*3+1]  = h_c[i].y;
+              ui_frame->rgb[i*3+2]  = h_c[i].z;
+              // A non-zero sentinel depth marks valid raycasted hits; zero means miss.
+              ui_frame->depth_meters[i] = (h_v[i].z != 0.0f || h_v[i].x != 0.0f || h_v[i].y != 0.0f) ? 1.0f : 0.0f;
+            }
 
-        QMetaObject::invokeMethod(
-            qApp,
-            [this, ui_frame]() {
-              if (frame_ready_cb_)
-                frame_ready_cb_(*ui_frame);
-            },
-            Qt::QueuedConnection);
+            QMetaObject::invokeMethod(
+                qApp,
+                [this, ui_frame]() {
+                  if (frame_ready_cb_)
+                    frame_ready_cb_(*ui_frame);
+                },
+                Qt::QueuedConnection);
+          }
+      } else {
+          // Fall through to CPU raycast
       }
 #else
+cpu_raycast:
       // Optimization for CPU: Downsample raycast for UI preview to reduce
       // jitter/lag
       {
@@ -890,13 +920,17 @@ void PipelineController::integrationLoop() {
     {
       std::lock_guard<std::mutex> lk(metrics_mutex_);
       metrics_.integrated_frames = integrated_count;
-      metrics_.volume_usage_pct = tsdf_->usageFraction() * 100.0f;
+      // GPU path: usageFraction() iterates 2M CPU voxels that are stale/empty
+      // when the volume lives on the GPU. Skip this expensive CPU loop.
+      if (!use_gpu_.load()) {
+          metrics_.volume_usage_pct = tsdf_->usageFraction() * 100.0f;
+      }
     }
 
     if (integrated_count % 50 == 0 && integrated_count > 0) {
       KFLOGF_INFO("Pipeline",
-                  "TSDF Status: %d frames integrated, volume fill=%.2f%%",
-                  integrated_count, (tsdf_->usageFraction() * 100.0f));
+                  "TSDF Status: %d frames integrated",
+                  integrated_count);
     }
 
     // Return frame to pool!
@@ -926,12 +960,35 @@ void PipelineController::meshingLoop() {
     std::shared_ptr<meshing::MeshData> mesh;
     {
       utils::ScopedTimer t("Mesh Extraction");
+      // gpu_mutex_ first to match lock ordering in integrationLoop.
+      // This is the heaviest GPU job (~400ms): holding gpu_mutex_ prevents
+      // tracking and integration from hammering the ROCm ring concurrently.
+      std::unique_lock<std::mutex> gpu_lk(gpu_mutex_);
       std::shared_lock<std::shared_mutex> lk_tsdf(tsdf_mutex_);
 #ifdef CUDA_ENABLED
-      mesh = cubes_->extractGPU(*tsdf_);
+      if (use_gpu_.load()) {
+          mesh = cubes_->extractGPU(*tsdf_);
+      } else {
+          gpu_lk.unlock(); // CPU mesh extraction doesn't need GPU serialization
+          mesh = cubes_->extract(*tsdf_, [this](float p) {
+            mesh_extract_progress_.store(p);
+            std::lock_guard<std::mutex> lk(metrics_mutex_);
+            metrics_.mesh_extract_pct = p * 100.0f;
+          });
+      }
 #elif defined(HIP_ENABLED)
-      mesh = cubes_->extractGPU(*tsdf_);
+      if (use_gpu_.load()) {
+          mesh = cubes_->extractGPU(*tsdf_);
+      } else {
+          gpu_lk.unlock(); // CPU mesh extraction doesn't need GPU serialization
+          mesh = cubes_->extract(*tsdf_, [this](float p) {
+            mesh_extract_progress_.store(p);
+            std::lock_guard<std::mutex> lk(metrics_mutex_);
+            metrics_.mesh_extract_pct = p * 100.0f;
+          });
+      }
 #else
+      gpu_lk.unlock(); // CPU mesh extraction doesn't need GPU serialization
       mesh = cubes_->extract(*tsdf_, [this](float p) {
         mesh_extract_progress_.store(p);
         std::lock_guard<std::mutex> lk(metrics_mutex_);

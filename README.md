@@ -1,18 +1,21 @@
 # KinectFusionQt
 
 Real-time 3D scanning application using Kinect v1, volumetric TSDF reconstruction,
-and Unity-ready GLB export. Runs on Fedora 43 with optional CUDA (NVIDIA) or HIP/ROCm (AMD) acceleration.
+and Unity-ready GLB export. Runs on Fedora 43 with HIP/ROCm (AMD) acceleration.
+
+**⚠️ CUDA/NVIDIA Path Status: DEPRECATED**
+The CUDA (NVIDIA) code path is currently **untested and may not compile**. Due to lack of access to NVIDIA hardware for testing, the CUDA backend cannot be verified. The CUDA code remains in the codebase but is not actively maintained. Use the HIP (AMD) or CPU backend instead.
 
 ---
 
 ## Features
 
 - Live Kinect v1 capture via **libfreenect** (no OpenNI)
-- **High-Performance GPU Pipeline**: Fully GPU-resident architecture optimized for NVIDIA (CUDA) and AMD (HIP/ROCm) GPUs.
+- **High-Performance GPU Pipeline**: Fully GPU-resident architecture optimized for AMD (HIP/ROCm) GPUs.
 - **Image-Centric TSDF**: $O(W \times H)$ pixel-parallel integration for real-time fidelity.
-- **Real-Time Super Resolution**: CUDA/HIP-accelerated or OpenMP-parallelized AMD FidelityFX CAS filters for enhanced RGB clarity.
+- **Real-Time Super Resolution**: HIP-accelerated or OpenMP-parallelized AMD FidelityFX CAS filters for enhanced RGB clarity.
 - **GPU-Resident ICP**: Multi-resolution tracking with block-reduced Hessian construction.
-- **Multi-Pass Marching Cubes**: Parallel mesh extraction via CUDA/Thrust or HIP/Host-Scan (< 2ms per scan).
+- **Multi-Pass Marching Cubes**: Parallel mesh extraction via HIP/Host-Scan (< 2ms per scan).
 - **Navigation Gizmo**: Blender-style interactive 3D axis gizmo for orientation control.
 - **OpenGL 3.3** real-time preview (point cloud + mesh modes)
 - **PLY** (binary) and **GLB** (Unity-ready) export via tinygltf
@@ -46,16 +49,14 @@ sudo dnf install -y \
     pkgconf-pkg-config
 ```
 
-#### Optional: CUDA / HIP Acceleration
-**NVIDIA GPUs (CUDA):**
-```bash
-sudo dnf install cuda
-```
-
+#### Optional: HIP Acceleration (AMD GPUs)
 **AMD GPUs (ROCm/HIP):**
 ```bash
 sudo dnf install rocm-hip rocm-opencl
 ```
+
+**⚠️ CUDA (NVIDIA) - DEPRECATED:**
+The CUDA backend is untested and may not compile. No NVIDIA hardware is available for testing. The CUDA code remains in the codebase but is not actively maintained. Use HIP (AMD) or CPU backend instead.
 
 ### 2. Cloning and Setup
 
@@ -90,15 +91,17 @@ The build system supports auto-detecting your GPU, or explicitly forcing a speci
 
 **Using the build helper (Recommended):**
 ```bash
-# Auto-detects HIP (AMD), then CUDA (NVIDIA), then CPU fallback
+# Auto-detects HIP (AMD), then CPU fallback
 ./scripts/build.sh
 
 # Force a specific backend
 ./scripts/build.sh --hip
-./scripts/build.sh --cuda
 ./scripts/build.sh --cpu
 ```
-The script will output the compiled binary in `build-hip/`, `build-cuda/`, `build-cpu/`, or `build/` respectively.
+
+**⚠️ CUDA build option removed:**
+The `--cuda` build option has been removed from the build script since the CUDA backend is untested and deprecated. Use HIP or CPU backend instead.
+The script will output the compiled binary in `build-hip/`, `build-cpu/`, or `build/` respectively.
 
 **Manual CMake:**
 ```bash
@@ -208,10 +211,12 @@ Scale is **1 unit = 1 metre** throughout.
 | "No Kinect devices found" | Check udev rules; run `lsusb` to confirm device visible |
 | Permission denied on USB | Add user to `plugdev`; re-login |
 | Tracking immediately lost | Ensure scene has enough texture/geometry; reduce motion speed; **Check `--verbose` logs for `inliers` and `model_pts`** |
-| Low FPS | Disable CUDA if GPU init fails; ensure Release build |
+| Low FPS | Ensure Release build; try CPU backend if GPU init fails |
 | GLB doesn't import to Unity | Ensure Unity 2019.4+ which includes built-in GLTF support, or use GLTFast package |
 | Linker / Undefined Reference errors | Run `./scripts/build.sh --clean` to refresh Qt meta-object data |
-| CUDA/HIP build fails | Check GPU_BACKEND logs in CMake. Run `./scripts/build.sh --cpu` for software fallback |
+| HIP build fails | Check GPU_BACKEND logs in CMake. Run `./scripts/build.sh --cpu` for software fallback |
+| GLB colors appear dark or incorrect | This should be fixed with proper color normalization. If issues persist, check that RGB integration is enabled and volume has sufficient weight |
+| CUDA build requested | CUDA backend is deprecated and untested. Use HIP (AMD) or CPU backend instead |
 
 ---
 

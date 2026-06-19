@@ -467,6 +467,7 @@ __global__ void generateMeshKernel(
             
             tsdf::VoxelGPU& v1 = get_voxel(x+c_corner_offsets[c1][0], y+c_corner_offsets[c1][1], z+c_corner_offsets[c1][2]);
             tsdf::VoxelGPU& v2 = get_voxel(x+c_corner_offsets[c2][0], y+c_corner_offsets[c2][1], z+c_corner_offsets[c2][2]);
+            // Colors are stored directly in 0-255 range (no denormalization)
             edge_c[i] = make_uchar3(
                 (uint8_t)fminf(255.0f, fmaxf(0.0f, v1.r + t * (v2.r - v1.r))),
                 (uint8_t)fminf(255.0f, fmaxf(0.0f, v1.g + t * (v2.g - v1.g))),
@@ -577,15 +578,30 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
         CUDA_CHECK(cudaMemcpy(raw_col.data(), d_mesh_colors_.get(), capped_tris * 9, cudaMemcpyDeviceToHost));
         
         // Unify vertices on CPU to save memory (reduces size by ~6x)
-        struct VectorHash {
-            size_t operator()(const Eigen::Vector3f& v) const {
-                size_t h1 = std::hash<float>{}(v.x());
-                size_t h2 = std::hash<float>{}(v.y());
-                size_t h3 = std::hash<float>{}(v.z());
-                return h1 ^ (h2 << 1) ^ (h3 << 2);
+        // Use spatial quantization to ensure vertices at slice boundaries are unified
+        struct QuantizedPos {
+            int ix, iy, iz;
+            
+            QuantizedPos(const Eigen::Vector3f& pos, float voxel_size) {
+                ix = static_cast<int>(std::round(pos.x() / (voxel_size * 0.01f)));
+                iy = static_cast<int>(std::round(pos.y() / (voxel_size * 0.01f)));
+                iz = static_cast<int>(std::round(pos.z() / (voxel_size * 0.01f)));
+            }
+            
+            bool operator==(const QuantizedPos& other) const {
+                return ix == other.ix && iy == other.iy && iz == other.iz;
             }
         };
-        std::unordered_map<Eigen::Vector3f, uint32_t, VectorHash> global_map;
+        
+        struct QuantizedHash {
+            size_t operator()(const QuantizedPos& q) const {
+                return std::hash<int>{}(q.ix) ^ 
+                       (std::hash<int>{}(q.iy) << 1) ^ 
+                       (std::hash<int>{}(q.iz) << 2);
+            }
+        };
+        
+        std::unordered_map<QuantizedPos, uint32_t, QuantizedHash> global_map;
         
         mesh->positions.reserve(capped_tris);
         mesh->normals.reserve(capped_tris);
@@ -594,12 +610,13 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
 
         for (uint32_t i = 0; i < capped_tris * 3; ++i) {
             Eigen::Vector3f pos(raw_pos[i].x, raw_pos[i].y, raw_pos[i].z);
-            auto it = global_map.find(pos);
+            QuantizedPos qpos(pos, params.voxel_size);
+            auto it = global_map.find(qpos);
             if (it != global_map.end()) {
                 mesh->indices.push_back(it->second);
             } else {
                 uint32_t new_idx = static_cast<uint32_t>(mesh->positions.size());
-                global_map[pos] = new_idx;
+                global_map[qpos] = new_idx;
                 mesh->positions.push_back(pos);
                 mesh->normals.push_back(Eigen::Vector3f(raw_norm[i].x, raw_norm[i].y, raw_norm[i].z));
                 mesh->colors.push_back(raw_col[i*3+0]);
