@@ -285,7 +285,7 @@ void SignalConditioner::processCpu(RawFrame& raw, float min_depth_m, float max_d
     }
     
     preprocessRgb(raw.rgb);
-    buildSuperResolutionGuidance(raw.rgb);
+    buildSuperResolutionGuidance(raw.rgb); // Build guidance from processed RGB
     denoiseDepthSpatial(raw.depth, min_depth_m, max_depth_m);
     fillDepthHoles(raw.depth, min_depth_m, max_depth_m);
     guidedDepthFilter(raw.depth, min_depth_m, max_depth_m);
@@ -309,12 +309,13 @@ void SignalConditioner::preprocessRgb(std::vector<uint8_t>& rgb) {
 }
 
 void SignalConditioner::buildSuperResolutionGuidance(const std::vector<uint8_t>& rgb) {
+    // Keep guidance at original resolution for depth filtering
+    // Apply RCAS sharpening for guidance quality
     sr_rgb_ = rgb;
-
-    // CAS is the in-tree fallback guidance sharpener until a DNN SR backend is added.
-    // Reduced sharpness from 0.85 to 0.5 to avoid over-sharpening artifacts and quality degradation
     sr::applyCAS(sr_rgb_, FRAME_W, FRAME_H, 0.5f);
 
+    // Build guidance luma from the sharpened image (original resolution)
+    guidance_luma_.resize(FRAME_W * FRAME_H);
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < FRAME_W * FRAME_H; ++i) {
         guidance_luma_[i] = rgbLuma(&sr_rgb_[i * 3]) / 255.0f;

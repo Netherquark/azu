@@ -10,6 +10,133 @@ namespace sensor {
 namespace sr {
 
 // ---------------------------------------------------------------------------
+// FSR 1.0 EASU — Edge Adaptive Spatial Upsampling (GPU HIP)
+// ---------------------------------------------------------------------------
+
+// Reflect boundary handling
+__device__ static inline int reflectCoordEASU(int x, int max_val) {
+    if (x < 0) return -x - 1;
+    if (x >= max_val) return 2 * max_val - x - 1;
+    return x;
+}
+
+// Reads a reflect-border pixel, returns normalised [0,1] floats per channel.
+__device__ static inline void easuGetPixel(const uint8_t* img,
+                                            int x, int y, int w, int h,
+                                            float out[3]) {
+    x = reflectCoordEASU(x, w);
+    y = reflectCoordEASU(y, h);
+    const int idx = (y * w + x) * 3;
+    out[0] = (float)img[idx + 0] * (1.0f / 255.0f);
+    out[1] = (float)img[idx + 1] * (1.0f / 255.0f);
+    out[2] = (float)img[idx + 2] * (1.0f / 255.0f);
+}
+
+// Bicubic interpolation kernel (Catmull-Rom)
+__device__ static inline float cubic(float x) {
+    float ax = fabsf(x);
+    if (ax <= 1.0f) {
+        return 0.5f * (ax * ax * ax - 2.0f * ax * ax + 1.0f);
+    } else if (ax < 2.0f) {
+        return 0.5f * (2.0f - ax) * (2.0f - ax) * (2.0f - ax);
+    }
+    return 0.0f;
+}
+
+__global__ void easuKernel(const uint8_t* __restrict__ d_src,
+                           uint8_t* __restrict__ d_dst,
+                           int src_width, int src_height,
+                           int dst_width, int dst_height,
+                           float x_scale, float y_scale) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= dst_width || y >= dst_height) return;
+
+    // Map destination pixel to source coordinates
+    float src_x = (x + 0.5f) * x_scale - 0.5f;
+    float src_y = (y + 0.5f) * y_scale - 0.5f;
+
+    int x0 = static_cast<int>(floorf(src_x)) - 1;
+    int y0 = static_cast<int>(floorf(src_y)) - 1;
+
+    float sum[3] = {0.0f, 0.0f, 0.0f};
+    float weight_sum = 0.0f;
+
+    // 4x4 bicubic sampling
+    for (int j = 0; j < 4; ++j) {
+        for (int i = 0; i < 4; ++i) {
+            int sample_x = x0 + i;
+            int sample_y = y0 + j;
+
+            float px[3];
+            easuGetPixel(d_src, sample_x, sample_y, src_width, src_height, px);
+
+            float wx = cubic(src_x - (x0 + i));
+            float wy = cubic(src_y - (y0 + j));
+            float w = wx * wy;
+
+            for (int ch = 0; ch < 3; ++ch) {
+                sum[ch] += px[ch] * w;
+            }
+            weight_sum += w;
+        }
+    }
+
+    int dst_idx = (y * dst_width + x) * 3;
+    for (int ch = 0; ch < 3; ++ch) {
+        float val = (weight_sum > 1e-6f) ? (sum[ch] / weight_sum) : 0.0f;
+        d_dst[dst_idx + ch] = (uint8_t)(fmaxf(0.0f, fminf(1.0f, val)) * 255.0f);
+    }
+}
+
+static HipBufferRAII g_easu_buffers; // process-lifetime singleton
+
+void applyEASU_GPU(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst,
+                   int src_width, int src_height, int scale) {
+    if (src.empty() || src_width <= 0 || src_height <= 0 || scale < 2 || scale > 4) return;
+
+    int dst_width = src_width * scale;
+    int dst_height = src_height * scale;
+    dst.resize(dst_width * dst_height * 3);
+
+    const size_t src_size = src.size();
+    const size_t dst_size = dst.size();
+
+    float x_scale = static_cast<float>(src_width) / dst_width;
+    float y_scale = static_cast<float>(src_height) / dst_height;
+
+    std::lock_guard<std::mutex> lk(g_easu_buffers.mtx);
+    g_easu_buffers.resize(dst_size);
+    if (!g_easu_buffers.d_in || !g_easu_buffers.d_out) return; // alloc failed
+
+    // Upload source
+    hipError_t err = hipMemcpy(g_easu_buffers.d_in, src.data(), src_size, hipMemcpyHostToDevice);
+    if (err != hipSuccess) {
+        fprintf(stderr, "[EASU-HIP] Upload failed: %s\n", hipGetErrorString(err));
+        return;
+    }
+
+    dim3 block(16, 16);
+    dim3 grid((dst_width  + block.x - 1) / block.x,
+              (dst_height + block.y - 1) / block.y);
+
+    easuKernel<<<grid, block>>>(g_easu_buffers.d_in, g_easu_buffers.d_out,
+                               src_width, src_height, dst_width, dst_height,
+                               x_scale, y_scale);
+
+    err = hipDeviceSynchronize();
+    if (err != hipSuccess) {
+        fprintf(stderr, "[EASU-HIP] Kernel error: %s\n", hipGetErrorString(err));
+        return;
+    }
+
+    err = hipMemcpy(dst.data(), g_easu_buffers.d_out, dst_size, hipMemcpyDeviceToHost);
+    if (err != hipSuccess) {
+        fprintf(stderr, "[EASU-HIP] Download failed: %s\n", hipGetErrorString(err));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FSR 1.0 RCAS — HIP Kernel
 //
 // Implements AMD FidelityFX FSR 1.0 RCAS (Robust Contrast Adaptive Sharpening)

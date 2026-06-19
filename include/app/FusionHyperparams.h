@@ -13,7 +13,7 @@ namespace app {
 struct FusionHyperparams {
     float min_depth = 0.30f;
     float max_depth = 2.50f;
-
+    int sr_scale = 2; // Super-resolution scale factor (2, 3, or 4)
 
     tsdf::TSDFParams    tsdf{};
     tracking::ICPParams icp{};

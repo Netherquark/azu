@@ -444,15 +444,16 @@ bool SignalConditioner::processCuda(RawFrame& raw,
     medianBlur3x3Kernel<<<grid, block, 0, stream>>>(d_rgb_out_.get(), d_rgb_in_.get(), w, h);
     HIP_CHECK_LAST();
 
-    // 2. Super Resolution Guidance (CAS)
-    // Reduced sharpness from 0.85 to 0.5 to avoid over-sharpening artifacts and quality degradation
+    // 2. Super Resolution: EASU upscaling (if scale > 1) + RCAS sharpening
+    // For now, keep guidance at original resolution for depth filtering
+    // Apply RCAS for sharpening (original resolution guidance)
     float sharpness = 0.5f;
     float t = std::max(0.0f, std::min(sharpness, 1.0f));
     float peak = -1.0f / ((1.0f - t) * 8.0f + t * 5.0f);
     applyCASKernel<<<grid, block, 0, stream>>>(d_rgb_in_.get(), d_rgb_out_.get(), w, h, peak);
     HIP_CHECK_LAST();
     
-    // Compute Luma for guided filter
+    // Compute Luma for guided filter (at original resolution)
     computeLumaKernel<<<grid, block, 0, stream>>>(d_rgb_out_.get(), d_guidance_luma_.get(), w, h);
     HIP_CHECK_LAST();
 

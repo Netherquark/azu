@@ -596,9 +596,12 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
         
         struct QuantizedHash {
             size_t operator()(const QuantizedPos& q) const {
-                return std::hash<int>{}(q.ix) ^ 
-                       (std::hash<int>{}(q.iy) << 1) ^ 
-                       (std::hash<int>{}(q.iz) << 2);
+                // Improved hash with better bit distribution to reduce collisions
+                size_t h1 = std::hash<int>{}(q.ix);
+                size_t h2 = std::hash<int>{}(q.iy);
+                size_t h3 = std::hash<int>{}(q.iz);
+                // Mix bits more thoroughly to prevent hash collisions
+                return h1 ^ (h2 << 16) ^ (h3 << 32) ^ (h2 >> 16) ^ (h3 >> 8);
             }
         };
         
@@ -614,7 +617,23 @@ std::shared_ptr<MeshData> MarchingCubes::extractGPU(const tsdf::TSDFVolume& volu
             QuantizedPos qpos(pos, params.voxel_size);
             auto it = global_map.find(qpos);
             if (it != global_map.end()) {
-                mesh->indices.push_back(it->second);
+                // Distance-based validation: prevent merging unrelated vertices
+                const Eigen::Vector3f& existing_pos = mesh->positions[it->second];
+                float dist_sq = (pos - existing_pos).squaredNorm();
+                float merge_threshold = params.voxel_size * 0.5f; // Half voxel size
+                if (dist_sq < merge_threshold * merge_threshold) {
+                    mesh->indices.push_back(it->second);
+                } else {
+                    // Too far apart - create new vertex despite hash collision
+                    uint32_t new_idx = static_cast<uint32_t>(mesh->positions.size());
+                    global_map[qpos] = new_idx;
+                    mesh->positions.push_back(pos);
+                    mesh->normals.push_back(Eigen::Vector3f(raw_norm[i].x, raw_norm[i].y, raw_norm[i].z));
+                    mesh->colors.push_back(raw_col[i*3+0]);
+                    mesh->colors.push_back(raw_col[i*3+1]);
+                    mesh->colors.push_back(raw_col[i*3+2]);
+                    mesh->indices.push_back(new_idx);
+                }
             } else {
                 uint32_t new_idx = static_cast<uint32_t>(mesh->positions.size());
                 global_map[qpos] = new_idx;

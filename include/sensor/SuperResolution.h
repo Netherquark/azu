@@ -8,21 +8,59 @@ namespace sensor {
 namespace sr {
 
 /**
+ * @brief Applies CPU-based Edge Adaptive Spatial Upsampling (AMD FSR 1.0 EASU) to upscale RGB image.
+ * 
+ * @param src Source RGB byte array
+ * @param dst Destination RGB byte array (will be resized)
+ * @param src_width Source image width
+ * @param src_height Source image height
+ * @param scale Scale factor (2, 3, or 4)
+ */
+void applyEASU_CPU(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst,
+                   int src_width, int src_height, int scale);
+
+/**
  * @brief Applies CPU-based Contrast Adaptive Sharpening (AMD FSR 1.0 CAS math) in-place to an RGB image.
  */
 void applyCAS_CPU(std::vector<uint8_t>& rgb, int width, int height, float sharpness = 0.85f);
 
 #ifdef CUDA_ENABLED
 /**
+ * @brief Applies GPU-accelerated Edge Adaptive Spatial Upsampling (AMD FSR 1.0 EASU).
+ */
+void applyEASU_GPU(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst,
+                   int src_width, int src_height, int scale);
+
+/**
  * @brief Applies GPU-accelerated Contrast Adaptive Sharpening (AMD FSR 1.0 CAS math) in-place.
  */
 void applyCAS_GPU(std::vector<uint8_t>& rgb, int width, int height, float sharpness = 0.85f);
 #elif defined(HIP_ENABLED)
 /**
+ * @brief Applies GPU-accelerated Edge Adaptive Spatial Upsampling (AMD FSR 1.0 EASU).
+ */
+void applyEASU_GPU(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst,
+                   int src_width, int src_height, int scale);
+
+/**
  * @brief Applies GPU-accelerated Contrast Adaptive Sharpening (AMD FSR 1.0 CAS math) in-place.
  */
 void applyCAS_GPU(std::vector<uint8_t>& rgb, int width, int height, float sharpness = 0.85f);
 #endif
+
+/**
+ * @brief Master wrapper for EASU. Dispatches to GPU if available, otherwise CPU.
+ */
+inline void applyEASU(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst,
+                     int src_width, int src_height, int scale) {
+#ifdef CUDA_ENABLED
+    applyEASU_GPU(src, dst, src_width, src_height, scale);
+#elif defined(HIP_ENABLED)
+    applyEASU_GPU(src, dst, src_width, src_height, scale);
+#else
+    applyEASU_CPU(src, dst, src_width, src_height, scale);
+#endif
+}
 
 /**
  * @brief Master wrapper. Dispatches to GPU if CUDA is enabled and available, otherwise CPU.

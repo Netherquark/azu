@@ -8,6 +8,7 @@ These parameters control the preprocessing of RGB and depth data before tracking
 | Parameter | UI Label | Range | Default | Significance |
 | :--- | :--- | :--- | :--- | :--- |
 | `cas_sharpness` | CAS Sharpness | 0.0 - 1.0 | 0.5 | Controls the strength of Contrast Adaptive Sharpening (AMD FSR 1.0). Lower values provide subtle enhancement, higher values increase edge definition but may introduce artifacts. |
+| `sr_scale` | SR Scale | 1, 2, 3, 4 | 2 | Super-resolution scale factor for RGB texturing. 1 = original (640x480), 2 = 2x (1280x960), 3 = 3x (1920x1440), 4 = 4x (2560x1920). Higher values improve texture quality but may impact performance. |
 
 ---
 

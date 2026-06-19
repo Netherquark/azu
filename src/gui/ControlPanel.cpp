@@ -200,6 +200,14 @@ void ControlPanel::setupUI() {
     spin_icp_it0_->setValue(4);
     g->addWidget(spin_icp_it0_, r++, 1);
 
+    g->addWidget(new QLabel("SR Scale", grp_hp_), r, 0);
+    combo_sr_scale_ = new QComboBox(grp_hp_);
+    combo_sr_scale_->addItem("2x");
+    combo_sr_scale_->addItem("3x");
+    combo_sr_scale_->addItem("4x");
+    combo_sr_scale_->setCurrentIndex(0); // Default to 2x
+    g->addWidget(combo_sr_scale_, r++, 1);
+
     btn_apply_hyper_ = new QPushButton("Apply hyperparameters", grp_hp_);
     btn_apply_hyper_->setProperty("class", "ActionBtn");
     g->addWidget(btn_apply_hyper_, r++, 0, 1, 2);
@@ -242,6 +250,7 @@ app::FusionHyperparams ControlPanel::hyperparamsFromUi() const {
     app::FusionHyperparams h;
     h.min_depth = static_cast<float>(spin_depth_min_->value());
     h.max_depth = static_cast<float>(spin_depth_max_->value());
+    h.sr_scale = combo_sr_scale_->currentText().toInt(); // Parse "2x", "3x", "4x"
     h.tsdf.voxel_size     = static_cast<float>(spin_voxel_->value());
     h.tsdf.truncation     = static_cast<float>(spin_trunc_->value());
     h.tsdf.max_weight     = static_cast<float>(spin_max_weight_->value());
@@ -261,6 +270,10 @@ app::FusionHyperparams ControlPanel::hyperparamsFromUi() const {
 void ControlPanel::setHyperparams(const app::FusionHyperparams& h) {
     spin_depth_min_->setValue(h.min_depth);
     spin_depth_max_->setValue(h.max_depth);
+    // Set SR scale combo box
+    QString scale_str = QString::number(h.sr_scale) + "x";
+    int idx = combo_sr_scale_->findText(scale_str);
+    if (idx >= 0) combo_sr_scale_->setCurrentIndex(idx);
     spin_voxel_->setValue(h.tsdf.voxel_size);
     spin_trunc_->setValue(h.tsdf.truncation);
     spin_max_weight_->setValue(h.tsdf.max_weight);

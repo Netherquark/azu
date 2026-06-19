@@ -31,8 +31,11 @@ public:
     void reset();
     void resetEMA();
     void process(RawFrame& raw, cudaStream_t cuda_stream, float min_depth_m, float max_depth_m);
+    void setSrScale(int scale) { sr_scale_ = scale; }
+    int getSrScale() const { return sr_scale_; }
 
 private:
+    int sr_scale_ = 2; // Default 2x upscaling
     std::vector<float>    ema_buf_m_;
     std::vector<uint8_t>  sr_rgb_;
     std::vector<uint8_t>  rgb_scratch_;
