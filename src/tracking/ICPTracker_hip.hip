@@ -174,7 +174,12 @@ __global__ void computeHessianKernel(
                     float3 v_model_world = model_vertices[midx];
                     float3 n_model_world = model_normals[midx];
 
-                    if (v_model_world.z > 0.0f && (n_model_world.x*n_model_world.x + n_model_world.y*n_model_world.y + n_model_world.z*n_model_world.z) > 0.9f) {
+                    // Check for valid hit: model vertex must be non-zero (zero = no raycast hit).
+                    // v_model_world is in WORLD space so z can be negative — do NOT check z > 0.
+                    // Match CPU: model_v_world.norm() < 1e-6f || model_n_world.norm() < 1e-6f.
+                    float mv_norm_sq = v_model_world.x*v_model_world.x + v_model_world.y*v_model_world.y + v_model_world.z*v_model_world.z;
+                    float mn_norm_sq = n_model_world.x*n_model_world.x + n_model_world.y*n_model_world.y + n_model_world.z*n_model_world.z;
+                    if (mv_norm_sq > 1e-12f && mn_norm_sq > 0.9f) {
                         float3 v_model;
                         v_model.x = rw00 * v_model_world.x + rw01 * v_model_world.y + rw02 * v_model_world.z + twx;
                         v_model.y = rw10 * v_model_world.x + rw11 * v_model_world.y + rw12 * v_model_world.z + twy;
@@ -249,15 +254,15 @@ __global__ void computeHessianKernel(
     vals[33] = (float)local_angle_filtered;
 
     int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    int lane = tid % 32;
-    int wid = tid / 32;
-    int num_warps = (blockDim.x * blockDim.y) / 32;
-    __shared__ float s_reduce[8][34];
+    int lane = tid % warpSize;
+    int wid = tid / warpSize;
+    int num_warps = (blockDim.x * blockDim.y + warpSize - 1) / warpSize;
+    __shared__ float s_reduce[16][34]; // max 512 threads / 32 = 16
 
     for (int i = 0; i < 34; ++i) {
         float val = vals[i];
-        // HIP: __shfl_down replaces __shfl_down_sync (no mask parameter on RDNA/GCN)
-        for (int offset = 16; offset > 0; offset /= 2) val += __shfl_down(val, offset);
+        // HIP: __shfl_down replaces __shfl_down_sync, works across entire native warpSize
+        for (int offset = warpSize / 2; offset > 0; offset /= 2) val += __shfl_down(val, offset);
         if (lane == 0) s_reduce[wid][i] = val;
     }
     __syncthreads();
@@ -316,7 +321,7 @@ ICPResult ICPTracker::trackGPU(const float*                d_depth,
         dim3 g((dw + block.x - 1) / block.x, (dh + block.y - 1) / block.y);
         downsampleKernel<<<g, block>>>(d_pyramid_v[l-1].get(), d_pyramid_n[l-1].get(), sw, sh, d_pyramid_v[l].get(), d_pyramid_n[l].get(), dw, dh);
     }
-    hipDeviceSynchronize();
+    (void)hipDeviceSynchronize();
 
     // 3. Track levels
     bool converged = false;

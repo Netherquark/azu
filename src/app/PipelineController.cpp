@@ -55,10 +55,12 @@ bool PipelineController::start() {
     running_.store(true);
     state_.store(PipelineState::Running);
     first_frame_          = true;
+    model_ready_.store(false);
     frame_count_          = 0;
     ui_skip_counter_      = 0;
     lost_log_counter_     = 0;
     success_log_counter_  = 0;
+    hip_ui_skip_          = 0;
     current_pose_  = Eigen::Matrix4f::Identity();
     // Set frame callback before starting capture
     sensor_->setFrameCallback([this](std::shared_ptr<sensor::RawFrame> raw) {
@@ -80,61 +82,75 @@ bool PipelineController::start() {
     }
 
 #ifdef CUDA_ENABLED
-    try {
-        tsdf_->initGPU();
-        tracker_->initGPU();
-        cudaError_t stream_err = cudaStreamCreate(&cuda_stream_);
-        if (stream_err != cudaSuccess) {
-            throw std::runtime_error(cudaGetErrorString(stream_err));
-        }
-        // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
-        for (int i = 0; i < 3; ++i) {
-            model_buffers_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-            model_buffers_.buffers[i]->d_normals = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-            model_buffers_.buffers[i]->d_colors = utils::make_cuda_unique<uchar3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-        }
-        use_gpu_ = true;
-        tsdf_->setGPUEnabled(true);
-        KFLOG_INFO("Pipeline", "CUDA hardware acceleration ENABLED (NVIDIA GPU detected).");
-    } catch (const std::exception& e) {
-        if (cuda_stream_) {
-            cudaStreamDestroy(cuda_stream_);
-            cuda_stream_ = nullptr;
-        }
+    if (preferred_backend_ == sensor::PreprocessBackend::CPU || preferred_backend_ == sensor::PreprocessBackend::HIP) {
         use_gpu_ = false;
         tsdf_->setGPUEnabled(false);
-        KFLOGF_WARN("Pipeline", "CUDA initialization FAILED: %s. Falling back to CPU mode.", e.what());
+        KFLOG_INFO("Pipeline", "Using CPU-only path (User explicitly requested or incompatible backend).");
+    } else {
+        try {
+            tsdf_->initGPU();
+            tracker_->initGPU();
+            cudaError_t stream_err = cudaStreamCreate(&cuda_stream_);
+            if (stream_err != cudaSuccess) {
+                throw std::runtime_error(cudaGetErrorString(stream_err));
+            }
+            for (int i = 0; i < 3; ++i) {
+                model_buffers_.buffers[i]->d_vertices = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+                model_buffers_.buffers[i]->d_normals = utils::make_cuda_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+                model_buffers_.buffers[i]->d_colors = utils::make_cuda_unique<uchar3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            }
+            use_gpu_ = true;
+            tsdf_->setGPUEnabled(true);
+            KFLOG_INFO("Pipeline", "CUDA hardware acceleration ENABLED (NVIDIA GPU detected).");
+        } catch (const std::exception& e) {
+            if (cuda_stream_) {
+                cudaStreamDestroy(cuda_stream_);
+                cuda_stream_ = nullptr;
+            }
+            use_gpu_ = false;
+            tsdf_->setGPUEnabled(false);
+            if (preferred_backend_ == sensor::PreprocessBackend::CUDA) {
+                KFLOGF_WARN("Pipeline", "CUDA initialization FAILED: %s. Falling back to CPU mode.", e.what());
+            } else {
+                KFLOGF_WARN("Pipeline", "CUDA initialization FAILED: %s. Falling back to CPU mode.", e.what());
+            }
+        }
     }
 #elif defined(HIP_ENABLED)
-    try {
-        tsdf_->initGPU();
-        tracker_->initGPU();
-        hipError_t stream_err = hipStreamCreate(&cuda_stream_);
-        if (stream_err != hipSuccess) {
-            throw std::runtime_error(hipGetErrorString(stream_err));
-        }
-        // ModelFrame buffers are managed via RAII in the tracking::ModelFrame struct
-        for (int i = 0; i < 3; ++i) {
-            model_buffers_.buffers[i]->d_vertices = utils::make_hip_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-            model_buffers_.buffers[i]->d_normals = utils::make_hip_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-            model_buffers_.buffers[i]->d_colors = utils::make_hip_unique<uchar3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
-        }
-        use_gpu_ = true;
-        tsdf_->setGPUEnabled(true);
-        KFLOG_INFO("Pipeline", "HIP/ROCm hardware acceleration ENABLED (AMD iGPU detected).");
-    } catch (const std::exception& e) {
-        if (cuda_stream_) {
-            hipStreamDestroy(cuda_stream_);
-            cuda_stream_ = nullptr;
-        }
+    if (preferred_backend_ == sensor::PreprocessBackend::CPU || preferred_backend_ == sensor::PreprocessBackend::CUDA) {
         use_gpu_ = false;
         tsdf_->setGPUEnabled(false);
-        KFLOGF_WARN("Pipeline", "HIP initialization FAILED: %s. Falling back to CPU mode.", e.what());
+        KFLOG_INFO("Pipeline", "Using CPU-only path (User explicitly requested or incompatible backend).");
+    } else {
+        try {
+            tsdf_->initGPU();
+            tracker_->initGPU();
+            hipError_t stream_err = hipStreamCreate(&cuda_stream_);
+            if (stream_err != hipSuccess) {
+                throw std::runtime_error(hipGetErrorString(stream_err));
+            }
+            for (int i = 0; i < 3; ++i) {
+                model_buffers_.buffers[i]->d_vertices = utils::make_hip_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+                model_buffers_.buffers[i]->d_normals = utils::make_hip_unique<float3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+                model_buffers_.buffers[i]->d_colors = utils::make_hip_unique<uchar3>(sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT);
+            }
+            use_gpu_ = true;
+            tsdf_->setGPUEnabled(true);
+            KFLOG_INFO("Pipeline", "HIP/ROCm hardware acceleration ENABLED (AMD iGPU detected).");
+        } catch (const std::exception& e) {
+            if (cuda_stream_) {
+                (void)hipStreamDestroy(cuda_stream_);
+                cuda_stream_ = nullptr;
+            }
+            use_gpu_ = false;
+            tsdf_->setGPUEnabled(false);
+            KFLOGF_WARN("Pipeline", "HIP initialization FAILED: %s. Falling back to CPU mode.", e.what());
+        }
     }
 #else
     use_gpu_ = false;
     tsdf_->setGPUEnabled(false);
-    KFLOG_INFO("Pipeline", "Using CPU-only path (CUDA not enabled in build).");
+    KFLOG_INFO("Pipeline", "Using CPU-only path (GPU not enabled in build).");
 #endif
 
     configurePreprocessor();
@@ -211,7 +227,7 @@ void PipelineController::stop() {
   }
 #elif defined(HIP_ENABLED)
   if (use_gpu_.load()) {
-      hipDeviceSynchronize();
+      (void)hipDeviceSynchronize();
   }
 #endif
 
@@ -242,7 +258,7 @@ void PipelineController::stop() {
     }
 #elif defined(HIP_ENABLED)
     if (cuda_stream_) {
-        hipStreamDestroy(cuda_stream_);
+        (void)hipStreamDestroy(cuda_stream_);
         cuda_stream_ = nullptr;
     }
     tsdf_->freeGPU();
@@ -301,6 +317,7 @@ void PipelineController::reset() {
     ui_skip_counter_      = 0;
     lost_log_counter_     = 0;
     success_log_counter_  = 0;
+    hip_ui_skip_          = 0;
     metrics_      = PipelineMetrics{};
     if (preprocessor_) {
         preprocessor_->reset();
@@ -423,6 +440,16 @@ void PipelineController::trackingLoop() {
         continue;
     }
 
+    // Race-condition guard: wait for the integration thread to finish the first raycast.
+    // Without this, frame 2 would ICP against an empty model and immediately declare
+    // tracking lost, locking the pipeline out of ever recovering.
+    if (!model_ready_.load()) {
+        // Re-enqueue frame as if it just arrived and spin-wait (effectively drops it)
+        releaseData(std::move(frame));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+    }
+
     // Get model frame safely from TripleBuffer storage (ZERO-COPY)
     std::shared_ptr<tracking::ModelFrame> model_ref;
     model_ref = model_buffers_.buffers[model_buffers_.acquireFront()];
@@ -497,7 +524,9 @@ void PipelineController::trackingLoop() {
             res = tracker_->track(pyramid, *model_ref, h_pose, prev_pose);
           }
 
-          if (res.tracking_ok && res.inliers > best_result.inliers) {
+          // Always track the best-inlier hypothesis so diagnostics are
+          // meaningful even when every hypothesis fails (tracking_ok==false).
+          if (res.inliers > best_result.inliers) {
               best_result = res;
           }
           if (best_result.tracking_ok && best_result.inliers > 5000) break; // Good enough
@@ -587,9 +616,11 @@ void PipelineController::trackingLoop() {
                 else if (icp_result.error > 1e-3) advice = "High residual error (fast motion or dynamic objects).";
                 else if (icp_result.dist_filtered > 10000) advice = "Too many points filtered by distance (too close/far).";
 
-                KFLOGF_WARN("Pipeline", "%s ICP Failed: inliers=%d, residual=%.6f, filtered=%d. Advice: %s",
+                KFLOGF_WARN("Pipeline", "%s ICP Failed: inliers=%d, residual=%f, valid_live=%d, valid_model=%d, dist_filt=%d, angle_filt=%d. Advice: %s",
                            (is_lost ? "[RELOCALIZING]" : "[TRACKING LOST]"),
-                           icp_result.inliers, icp_result.error, icp_result.dist_filtered, advice);
+                           icp_result.inliers, icp_result.error, 
+                           icp_result.valid_live_points, icp_result.valid_model_points,
+                           icp_result.dist_filtered, icp_result.angle_filtered, advice);
             }
         } else {
             // success_log_counter_ is a member (not static local) to avoid UB on thread restart.
@@ -757,29 +788,38 @@ void PipelineController::integrationLoop() {
                             sensor::DEPTH_HEIGHT, model_back.d_vertices.get(),
                             model_back.d_normals.get(), model_back.d_colors.get());
       }
-      // Sync to CPU for UI preview
-      if (frame_ready_cb_) {
+      // Sync to CPU for UI preview.
+      // Throttle: on the shared AMD iGPU (5650u) every hipMemcpy stalls the GPU
+      // pipeline and starves the GNOME compositor. Only send a UI update every
+      // HIP_UI_PREVIEW_INTERVAL integrated frames to keep the display responsive.
+      static constexpr int HIP_UI_PREVIEW_INTERVAL = 3;
+      if (frame_ready_cb_ && (++hip_ui_skip_ % HIP_UI_PREVIEW_INTERVAL == 0)) {
         size_t n = sensor::DEPTH_WIDTH * sensor::DEPTH_HEIGHT;
         std::vector<float3> h_v(n);
-        std::vector<float3> h_n(n);
         std::vector<uchar3> h_c(n);
 
-        hipMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), hipMemcpyDeviceToHost);
-        hipMemcpy(h_n.data(), model_back.d_normals.get(), n * sizeof(float3), hipMemcpyDeviceToHost);
-        hipMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), hipMemcpyDeviceToHost);
+        // raycastGPU already called hipDeviceSynchronize internally.
+        // Only copy what the UI actually needs (vertices + colors, skip normals).
+        (void)hipMemcpy(h_v.data(), model_back.d_vertices.get(), n * sizeof(float3), hipMemcpyDeviceToHost);
+        (void)hipMemcpy(h_c.data(), model_back.d_colors.get(), n * sizeof(uchar3), hipMemcpyDeviceToHost);
 
         auto ui_frame = std::make_shared<sensor::FrameData>();
-        ui_frame->width = sensor::DEPTH_WIDTH;
+        ui_frame->width  = sensor::DEPTH_WIDTH;
         ui_frame->height = sensor::DEPTH_HEIGHT;
-        ui_frame->vertices.reserve(n);
-        ui_frame->rgb.reserve(n * 3);
+        // Use resize (not reserve) so rgb is properly sized for index access in uploadPointCloud.
+        ui_frame->vertices.resize(n);
+        ui_frame->rgb.resize(n * 3);
+        // Populate depth_meters so uploadPointCloud uses the depth-based validity path.
+        ui_frame->depth_meters.resize(n);
         ui_frame->pose = Eigen::Matrix4f::Identity();
 
         for (size_t i = 0; i < n; ++i) {
-          ui_frame->vertices.emplace_back(h_v[i].x, h_v[i].y, h_v[i].z);
-          ui_frame->rgb.push_back(h_c[i].x);
-          ui_frame->rgb.push_back(h_c[i].y);
-          ui_frame->rgb.push_back(h_c[i].z);
+          ui_frame->vertices[i] = Eigen::Vector3f(h_v[i].x, h_v[i].y, h_v[i].z);
+          ui_frame->rgb[i*3+0]  = h_c[i].x;
+          ui_frame->rgb[i*3+1]  = h_c[i].y;
+          ui_frame->rgb[i*3+2]  = h_c[i].z;
+          // A non-zero sentinel depth marks valid raycasted hits; zero means miss.
+          ui_frame->depth_meters[i] = (h_v[i].z != 0.0f || h_v[i].x != 0.0f || h_v[i].y != 0.0f) ? 1.0f : 0.0f;
         }
 
         QMetaObject::invokeMethod(
@@ -838,6 +878,8 @@ void PipelineController::integrationLoop() {
       }
 #endif
       model_buffers_.swap();
+      // Signal trackingLoop that at least one valid model frame exists.
+      model_ready_.store(true);
     }
 
     {

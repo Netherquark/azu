@@ -9,6 +9,7 @@
 #include <functional>
 #include <queue>
 #include <string>
+#include <chrono>
 
 #include "sensor/KinectSensor.h"
 #include "sensor/FrameData.h"
@@ -143,6 +144,9 @@ private:
     int                                   ui_skip_counter_      = 0;
     int                                   lost_log_counter_     = 0;
     int                                   success_log_counter_  = 0;
+    // HIP UI preview throttle — every N integrated frames to avoid starving
+    // the GNOME compositor on the shared AMD iGPU (5650u).
+    int                                   hip_ui_skip_          = 0;
 
     // Tracking model frame (Triple-buffered to prevent data race)
     struct TripleBufferModel {
@@ -182,6 +186,9 @@ private:
     std::atomic<float>                    mesh_extract_progress_{0.0f};
     std::atomic<float>                    export_progress_{0.0f};
     std::atomic<bool>                     use_gpu_{false};
+    // Set to true by integrationLoop after the first model raycast completes.
+    // Prevents trackingLoop from running ICP against an empty model buffer.
+    std::atomic<bool>                     model_ready_{false};
     sensor::cudaStream_t                  cuda_stream_ = nullptr;
     mutable std::mutex                    control_mutex_;
 

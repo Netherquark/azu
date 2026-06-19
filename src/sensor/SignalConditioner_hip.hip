@@ -357,12 +357,12 @@ bool SignalConditioner::processCuda(RawFrame& raw,
         d_depth_meters_ = utils::make_hip_unique<float>(n);
         d_ema_buf_m_ = utils::make_hip_unique<float>(n);
         d_guidance_luma_ = utils::make_hip_unique<float>(n);
-        hipMemsetAsync(d_ema_buf_m_.get(), 0, n * sizeof(float), stream);
+        (void)hipMemsetAsync(d_ema_buf_m_.get(), 0, n * sizeof(float), stream);
     }
 
     // Upload
-    hipMemcpyAsync(d_rgb_in_.get(), raw.rgb.data(), n * 3, hipMemcpyHostToDevice, stream);
-    hipMemcpyAsync(d_depth_in_.get(), raw.depth.data(), n * sizeof(uint16_t), hipMemcpyHostToDevice, stream);
+    (void)hipMemcpyAsync(d_rgb_in_.get(), raw.rgb.data(), n * 3, hipMemcpyHostToDevice, stream);
+    (void)hipMemcpyAsync(d_depth_in_.get(), raw.depth.data(), n * sizeof(uint16_t), hipMemcpyHostToDevice, stream);
 
     dim3 block(16, 16);
     dim3 grid((w + block.x - 1) / block.x, (h + block.y - 1) / block.y);
@@ -407,10 +407,10 @@ bool SignalConditioner::processCuda(RawFrame& raw,
     HIP_CHECK_LAST();
 
     // Download (Only for UI preview or CPU-mode compatibility)
-    hipMemcpyAsync(raw.rgb.data(), d_rgb_out_.get(), n * 3, hipMemcpyDeviceToHost, stream);
-    hipMemcpyAsync(raw.depth.data(), d_depth_out_.get(), n * sizeof(uint16_t), hipMemcpyDeviceToHost, stream);
+    (void)hipMemcpyAsync(raw.rgb.data(), d_rgb_out_.get(), n * 3, hipMemcpyDeviceToHost, stream);
+    (void)hipMemcpyAsync(raw.depth.data(), d_depth_out_.get(), n * sizeof(uint16_t), hipMemcpyDeviceToHost, stream);
 
-    hipStreamSynchronize(stream);
+    (void)hipStreamSynchronize(stream);
     return true;
 }
 

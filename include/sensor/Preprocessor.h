@@ -12,7 +12,8 @@ namespace sensor {
 enum class PreprocessBackend {
     Auto,
     CPU,
-    CUDA
+    CUDA,
+    HIP
 };
 
 const char* backendName(PreprocessBackend backend);

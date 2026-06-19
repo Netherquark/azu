@@ -510,10 +510,10 @@ void MarchingCubes::initGPU(int res) {
     const int corner_offsets[8][3] = {{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
     const int edge_corners[12][2] = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
 
-    hipMemcpyToSymbol(c_edge_table, edge_table, 256 * sizeof(int));
-    hipMemcpyToSymbol(c_tri_table, tri_table, 256 * 16 * sizeof(int));
-    hipMemcpyToSymbol(c_corner_offsets, corner_offsets, 8 * 3 * sizeof(int));
-    hipMemcpyToSymbol(c_edge_corners, edge_corners, 12 * 2 * sizeof(int));
+    (void)hipMemcpyToSymbol(c_edge_table, edge_table, 256 * sizeof(int));
+    (void)hipMemcpyToSymbol(c_tri_table, tri_table, 256 * 16 * sizeof(int));
+    (void)hipMemcpyToSymbol(c_corner_offsets, corner_offsets, 8 * 3 * sizeof(int));
+    (void)hipMemcpyToSymbol(c_edge_corners, edge_corners, 12 * 2 * sizeof(int));
     
     last_resolution_ = res;
 }

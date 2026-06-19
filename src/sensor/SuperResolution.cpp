@@ -31,12 +31,7 @@ inline void getPixel(const std::vector<uint8_t>& img, int x, int y, int w, int h
 void applyCAS_CPU(std::vector<uint8_t>& rgb, int width, int height, float sharpness) {
     if (rgb.empty() || width <= 0 || height <= 0) return;
 
-    // Use thread_local to completely eliminate the heavy 1MB std::vector allocation overhead per frame.
-    // Memory will securely persist for the lifetime of the tracking thread.
-    thread_local std::vector<uint8_t> scratch_buffer;
-    if (scratch_buffer.size() != rgb.size()) {
-        scratch_buffer.resize(rgb.size());
-    }
+    std::vector<uint8_t> scratch_buffer(rgb.size());
 
     // Map sharpness [0.0, 1.0] to FSR peak [-1/8, -1/5]
     float t = std::clamp(sharpness, 0.0f, 1.0f);

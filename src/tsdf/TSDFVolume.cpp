@@ -72,9 +72,9 @@ void TSDFVolume::integrate(const float*           depth_meters,
             d_depth_integ_ = utils::make_hip_unique<float>(width * height);
             if (rgb) d_rgb_integ_ = utils::make_hip_unique<uint8_t>(width * height * 3);
         }
-        hipMemcpy(d_depth_integ_.get(), depth_meters, width * height * sizeof(float), hipMemcpyHostToDevice);
+        (void)hipMemcpy(d_depth_integ_.get(), depth_meters, width * height * sizeof(float), hipMemcpyHostToDevice);
         if (rgb) {
-            hipMemcpy(d_rgb_integ_.get(), rgb, width * height * 3, hipMemcpyHostToDevice);
+            (void)hipMemcpy(d_rgb_integ_.get(), rgb, width * height * 3, hipMemcpyHostToDevice);
         }
         integrateGPU(d_depth_integ_.get(), rgb ? d_rgb_integ_.get() : nullptr, pose, fx, fy, cx, cy, width, height);
     } else {

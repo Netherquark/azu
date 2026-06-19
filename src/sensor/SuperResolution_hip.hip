@@ -61,15 +61,15 @@ struct CudaBufferRAII {
     uint8_t* d_out = nullptr;
     size_t size = 0;
     ~CudaBufferRAII() {
-        if (d_in) hipFree(d_in);
-        if (d_out) hipFree(d_out);
+        if (d_in) (void)hipFree(d_in);
+        if (d_out) (void)hipFree(d_out);
     }
     void resize(size_t req_size) {
         if (size != req_size) {
-            if (d_in) hipFree(d_in);
-            if (d_out) hipFree(d_out);
-            hipMalloc(&d_in, req_size);
-            hipMalloc(&d_out, req_size);
+            if (d_in) (void)hipFree(d_in);
+            if (d_out) (void)hipFree(d_out);
+            (void)hipMalloc(&d_in, req_size);
+            (void)hipMalloc(&d_out, req_size);
             size = req_size;
         }
     }
@@ -86,15 +86,15 @@ void applyCAS_GPU(std::vector<uint8_t>& rgb, int width, int height, float sharpn
     float peak = -1.0f / ((1.0f - t) * 8.0f + t * 5.0f);
 
     // Async block
-    hipMemcpy(buffers.d_in, rgb.data(), req_size, hipMemcpyHostToDevice);
+    (void)hipMemcpy(buffers.d_in, rgb.data(), req_size, hipMemcpyHostToDevice);
 
     dim3 block(16, 16);
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
     applyCASKernel<<<grid, block>>>(buffers.d_in, buffers.d_out, width, height, peak);
-    hipDeviceSynchronize();
+    (void)hipDeviceSynchronize();
 
-    hipMemcpy(rgb.data(), buffers.d_out, req_size, hipMemcpyDeviceToHost);
+    (void)hipMemcpy(rgb.data(), buffers.d_out, req_size, hipMemcpyDeviceToHost);
 }
 
 } // namespace sr

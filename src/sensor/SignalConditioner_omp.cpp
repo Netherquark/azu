@@ -148,11 +148,11 @@ void SignalConditioner::reset() {
     if (d_depth_in_) cudaMemset(d_depth_in_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
     if (d_depth_out_) cudaMemset(d_depth_out_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
 #elif defined(HIP_ENABLED)
-    if (d_rgb_in_) hipMemset(d_rgb_in_.get(), 0, sr_rgb_.size());
-    if (d_rgb_out_) hipMemset(d_rgb_out_.get(), 0, sr_rgb_.size());
-    if (d_guidance_luma_) hipMemset(d_guidance_luma_.get(), 0, guidance_luma_.size() * sizeof(float));
-    if (d_depth_in_) hipMemset(d_depth_in_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
-    if (d_depth_out_) hipMemset(d_depth_out_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
+    if (d_rgb_in_) (void)hipMemset(d_rgb_in_.get(), 0, sr_rgb_.size());
+    if (d_rgb_out_) (void)hipMemset(d_rgb_out_.get(), 0, sr_rgb_.size());
+    if (d_guidance_luma_) (void)hipMemset(d_guidance_luma_.get(), 0, guidance_luma_.size() * sizeof(float));
+    if (d_depth_in_) (void)hipMemset(d_depth_in_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
+    if (d_depth_out_) (void)hipMemset(d_depth_out_.get(), 0, depth_scratch_.size() * sizeof(uint16_t));
 #endif
 }
 
@@ -161,7 +161,7 @@ void SignalConditioner::resetEMA() {
 #ifdef CUDA_ENABLED
     if (d_ema_buf_m_) cudaMemset(d_ema_buf_m_.get(), 0, ema_buf_m_.size() * sizeof(float));
 #elif defined(HIP_ENABLED)
-    if (d_ema_buf_m_) hipMemset(d_ema_buf_m_.get(), 0, ema_buf_m_.size() * sizeof(float));
+    if (d_ema_buf_m_) (void)hipMemset(d_ema_buf_m_.get(), 0, ema_buf_m_.size() * sizeof(float));
 #endif
 }
 

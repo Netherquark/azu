@@ -19,11 +19,11 @@ namespace kfusion {
 namespace tsdf {
 
 struct TSDFParams {
-    int   resolution     = 256;          // 256³ voxels — much faster than 512³
-    float voxel_size     = 0.005f;       // meters per voxel (256 * 0.005 = 1.28m) for hi-res
-    float truncation     = 0.030f;       // meters (3 voxels)
+    int   resolution     = 256;          // 256³ voxels
+    float voxel_size     = 0.010f;       // meters per voxel (256 * 0.010 = 2.56m) — covers full Kinect range
+    float truncation     = 0.030f;       // meters (3 voxels at 0.010m)
     float max_weight     = 128.0f;
-    Eigen::Vector3f origin = {-1.28f, -1.28f, 0.0f};
+    Eigen::Vector3f origin = {-1.28f, -1.28f, 0.0f}; // Z: [0, 2.56m], XY: [-1.28, +1.28m]
 };
 
 struct Voxel {

@@ -15,7 +15,7 @@ namespace utils {
 struct HipDeleter {
     void operator()(void* ptr) const {
         if (ptr) {
-            hipFree(ptr);
+            (void)hipFree(ptr);
         }
     }
 };
