@@ -56,8 +56,8 @@ Ensure `/usr/local/cuda/bin` is in your `PATH`.
 ### 2. Cloning and Setup
 
 ```bash
-git clone https://github.com/1vedantshinde/kinect_asset.git
-cd kinect_asset
+git clone https://github.com/Netherquark/azu.git
+cd azu
 
 # Fetch bundled dependencies (tinygltf, stb)
 bash scripts/fetch_deps.sh

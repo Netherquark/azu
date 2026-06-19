@@ -53,4 +53,4 @@ fi
 
 echo ""
 echo "=== All dependencies fetched successfully ==="
-echo "You can now run: mkdir build && cd build && cmake .. && make -j\$(nproc)"
+echo "You can now run: mkdir build && cd build && cmake .. -GNinja -DCMAKE_BUILD_TYPE=Release && ninja"
