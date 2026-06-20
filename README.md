@@ -1,10 +1,14 @@
-# KinectFusionQt
-
+# Azu
+<p>
+<p align="center">
+<img width="640" height="360" alt="manul" src="https://github.com/user-attachments/assets/e6867f31-747b-4873-9816-77e5e9fbf995" />
+</p>
+<p align="center">
+<em>The project is named after Az, a manul who lives in Kobe Animal Kingdom. Manuls are small wild cats with long and dense light grey fur, and rounded ears set low on the sides of the head. </em>
+</p>
+</p>
 Real-time 3D scanning application using Kinect v1, volumetric TSDF reconstruction,
 and Unity-ready GLB export. Runs on Fedora 43 with HIP/ROCm (AMD) acceleration.
-
-**⚠️ CUDA/NVIDIA Path Status: DEPRECATED**
-The CUDA (NVIDIA) code path is currently **untested and may not compile**. Due to lack of access to NVIDIA hardware for testing, the CUDA backend cannot be verified. The CUDA code remains in the codebase but is not actively maintained. Use the HIP (AMD) or CPU backend instead.
 
 ---
 
@@ -19,7 +23,7 @@ The CUDA (NVIDIA) code path is currently **untested and may not compile**. Due t
 - **Navigation Gizmo**: Blender-style interactive 3D axis gizmo for orientation control.
 - **OpenGL 3.3** real-time preview (point cloud + mesh modes)
 - **PLY** (binary) and **GLB** (Unity-ready) export via tinygltf
-- Qt5 GUI with live metrics panel
+- Qt GUI with live metrics panel
 
 ---
 
@@ -55,7 +59,7 @@ sudo dnf install -y \
 sudo dnf install rocm-hip rocm-opencl
 ```
 
-**⚠️ CUDA (NVIDIA) - DEPRECATED:**
+**⚠️ CUDA - DEPRECATED:**
 The CUDA backend is untested and may not compile. No NVIDIA hardware is available for testing. The CUDA code remains in the codebase but is not actively maintained. Use HIP (AMD) or CPU backend instead.
 
 ### 2. Cloning and Setup
@@ -98,10 +102,6 @@ The build system supports auto-detecting your GPU, or explicitly forcing a speci
 ./scripts/build.sh --hip
 ./scripts/build.sh --cpu
 ```
-
-**⚠️ CUDA build option removed:**
-The `--cuda` build option has been removed from the build script since the CUDA backend is untested and deprecated. Use HIP or CPU backend instead.
-The script will output the compiled binary in `build-hip/`, `build-cpu/`, or `build/` respectively.
 
 **Manual CMake:**
 ```bash
