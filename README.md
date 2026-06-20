@@ -222,4 +222,4 @@ Scale is **1 unit = 1 metre** throughout.
 
 ## License
 
-MIT — see LICENSE file.
+GPLv3 — see LICENSE file.
